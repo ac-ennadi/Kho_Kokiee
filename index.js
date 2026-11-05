@@ -1,27 +1,27 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField } = require('discord.js');
 
-const client = new Date ? new Client({
+const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, // Required to read .v commands
+    GatewayIntentBits.MessageContent,
   ],
   presence: {
     status: 'online',
     activities: [{ name: 'for new members', type: ActivityType.Watching }],
   },
-}) : null;
+});
 
 // Configuration IDs loaded securely from Railway Environment Variables
 const ROLE_ID = process.env.ROLE_ID;                    
 const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;               
 const TARGET_VC_ID = process.env.TARGET_VC_ID;              
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
-const CATEGORY_ID = process.env.CATEGORY_ID || null;                  // Category for Verification VCs
-const CREATE_VC_ID = process.env.CREATE_VC_ID;                        // Hub channel ID for Join-to-Create
-const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    // Category for Custom Member VCs
+const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
+const CREATE_VC_ID = process.env.CREATE_VC_ID;                        
+const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    
 
 // In-memory tracker to remember who owns which custom voice channel { channelId: userId }
 const roomOwners = new Map();
@@ -47,12 +47,14 @@ client.on('guildMemberAdd', async (member) => {
 
 // 2. Handle voice channel workflows (Verification, Custom J2C, and Cleanup)
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  // A. CLEANUP: Check if someone left a temporary channel and it's now empty
-  if (oldState.channel && (oldState.channel.name.startsWith('verify-') || oldState.channel.name.includes("'s Room"))) {
+  if (oldState.channel) {
     const channel = oldState.channel;
-    if (channel.members.size === 0) {
+    const isVerifyChannel = channel.name.startsWith('verify-');
+    const isCustomRoom = roomOwners.has(channel.id);
+
+    if ((isVerifyChannel || isCustomRoom) && channel.members.size === 0) {
       try {
-        roomOwners.delete(channel.id); // Remove ownership tracking
+        roomOwners.delete(channel.id);
         await channel.delete();
         console.log(`Deleted empty temporary channel: ${channel.name}`);
       } catch (err) {
@@ -61,13 +63,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
   }
 
-  // B. JOIN TO CREATE: Check if the user joined the "Create Channel" hub
   if (CREATE_VC_ID && newState.channelId === CREATE_VC_ID && oldState.channelId !== CREATE_VC_ID) {
     const member = newState.member;
     try {
       const guild = newState.guild;
 
-      // Create a personalized voice channel inside the custom J2C category
       const customChannel = await guild.channels.create({
         name: `🔊 ${member.user.username}'s Room`,
         type: ChannelType.GuildVoice,
@@ -80,14 +80,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         ]
       });
 
-      // Save ownership mapping
       roomOwners.set(customChannel.id, member.id);
 
-      // Move the user into their newly created custom channel
       await member.voice.setChannel(customChannel);
       console.log(`Created custom voice channel ${customChannel.name} and moved ${member.user.tag}`);
 
-      // Send instruction message mentioning the owner inside the voice channel chat
       setTimeout(async () => {
         try {
           await customChannel.send(
@@ -109,7 +106,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
   }
 
-  // C. VERIFICATION WORKFLOW: Check if the user joined the verification voice channel
   if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
 
@@ -157,21 +153,45 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
-// 3. Handle Room Control Commands (.v name, .v lock, .v unlock, .v add, .v permit, .v reject)
+// 3. Handle Messages & Commands
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
+
+  // A. BROADCAST / SAY COMMAND: .say <message> (Restricted to Staff Role)
+  if (message.content.startsWith('.say ')) {
+    // Check if the user has the staff role (or is a server Administrator)
+    const hasStaffRole = STAFF_ROLE_ID && message.member.roles.cache.has(STAFF_ROLE_ID);
+    const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+    if (!hasStaffRole && !isAdmin) {
+      return message.reply('❌ You do not have permission to use the `.say` command.').then(msg => {
+        setTimeout(() => msg.delete().catch(() => {}), 5000);
+      });
+    }
+
+    const broadcastText = message.content.slice(5).trim();
+    if (!broadcastText) return;
+
+    try {
+      await message.delete(); // Delete command message
+      await message.channel.send(broadcastText); // Send broadcast as bot
+    } catch (err) {
+      console.error(`Say command error: ${err.message}`);
+    }
+    return;
+  }
+
+  // B. VOICE ROOM CONTROL COMMANDS: .v ...
   if (!message.content.startsWith('.v')) return;
 
   const args = message.content.slice(2).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // Find the voice channel the user is currently connected to
   const voiceChannel = message.member?.voice?.channel;
   if (!voiceChannel) {
     return message.reply('❌ You must be connected to a voice channel to use room commands.');
   }
 
-  // Check if the user owns this specific custom room
   const ownerId = roomOwners.get(voiceChannel.id);
   if (!ownerId || ownerId !== message.author.id) {
     return message.reply('❌ You can only manage a custom voice channel that you created!');
@@ -210,7 +230,7 @@ client.on('messageCreate', async (message) => {
         await targetMember.voice.disconnect();
       }
 
-      await message.reply(`🚫 Rejected ${targetUser} from your room.`);
+      await message.reply(`🚫 Rejected ${targetUser} from users who can enter.`);
     }
   } catch (err) {
     console.error(`Command error: ${err.message}`);
