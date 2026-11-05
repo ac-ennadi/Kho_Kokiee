@@ -38,11 +38,23 @@ client.on('guildMemberAdd', async (member) => {
   }
 });
 
-// 2. Handle voice channel verification workflow
+// 2. Handle voice channel verification workflow and cleanup
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  console.log(`[VoiceUpdate] User ${newState.member?.user.tag} moved from channel ${oldState.channelId} to ${newState.channelId}`);
+  // A. CLEANUP: Check if someone left a temporary verification channel and it's now empty
+  if (oldState.channel && oldState.channel.name.startsWith('verify-')) {
+    const channel = oldState.channel;
+    // If no members are left in the temporary channel, delete it
+    if (channel.members.size === 0) {
+      try {
+        await channel.delete();
+        console.log(`Deleted empty temporary verification channel: ${channel.name}`);
+      } catch (err) {
+        console.error(`Failed to delete empty channel: ${err.message}`);
+      }
+    }
+  }
 
-  // Check if the user just joined the specific verification voice channel
+  // B. CREATION: Check if the user just joined the specific verification voice channel
   if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
 
@@ -101,11 +113,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         setTimeout(async () => {
           try {
             await newChannel.send(`${staffRoleMention} New verification session started for **${member.user.tag}**. Please assist them here!`);
-            console.log(`Sent staff notification inside the voice channel chat.`);
+            console.log(`Sent staff notification inside the voice channel text chat.`);
           } catch (err) {
             console.error(`Failed to send message in voice channel text chat: ${err.message}`);
           }
-        }, 1000); // 1-second delay to ensure channel connection is fully established
+        }, 1000);
       }
 
     } catch (error) {
