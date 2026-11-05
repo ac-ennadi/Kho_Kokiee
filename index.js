@@ -19,7 +19,7 @@ const ROLE_ID = process.env.ROLE_ID;
 const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;               
 const TARGET_VC_ID = process.env.TARGET_VC_ID;              
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
-const MOVE_ROLE_ID = process.env.MOVE_ROLE_ID;                        // Role allowed to use 'aji'
+const MOVE_ROLE_ID = process.env.MOVE_ROLE_ID;                        
 const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
 const CREATE_VC_ID = process.env.CREATE_VC_ID;                        
 const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    
@@ -51,7 +51,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (oldState.channel) {
     const channel = oldState.channel;
     const isVerifyChannel = channel.name.startsWith('verify-');
-    const isCustomRoom = roomOwners.has(channel.id);
+    const isCustomRoom = roomOwners.has(channel.id) || channel.name.includes("'s Room");
 
     if ((isVerifyChannel || isCustomRoom) && channel.members.size === 0) {
       try {
@@ -96,7 +96,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             `• \`.v unlock\` - Unlock your room\n` +
             `• \`.v limit <number>\` - Set a max user limit (0 for unlimited)\n` +
             `• \`.v add @User\` (or \`.v permit @User\`) - Allow a specific user to join\n` +
-            `• \`.v reject @User\` - Block and kick a user from your room`
+            `• \`.v reject @User\` - Block and kick a user from your room\n` +
+            `• \`.v claim\` - Reclaim ownership if the bot restarts`
           );
         } catch (err) {
           console.error(`Failed to send guide message in custom room: ${err.message}`);
@@ -159,7 +160,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  // A. AJI COMMAND: aji @user (Pull someone into your voice channel)
+  // A. AJI COMMAND: aji @user
   if (message.content.toLowerCase().startsWith('aji ')) {
     const hasMoveRole = MOVE_ROLE_ID && message.member.roles.cache.has(MOVE_ROLE_ID);
     const hasStaffRole = STAFF_ROLE_ID && message.member.roles.cache.has(STAFF_ROLE_ID);
@@ -172,19 +173,13 @@ client.on('messageCreate', async (message) => {
     }
 
     const targetMember = message.mentions.members.first();
-    if (!targetMember) {
-      return message.reply('❌ Please mention a user to move. Example: `aji @Username`');
-    }
+    if (!targetMember) return message.reply('❌ Please mention a user to move. Example: `aji @Username`');
 
     const authorVoiceChannel = message.member.voice.channel;
-    if (!authorVoiceChannel) {
-      return message.reply('❌ You must be in a voice channel yourself to pull someone to you.');
-    }
+    if (!authorVoiceChannel) return message.reply('❌ You must be in a voice channel yourself to pull someone to you.');
 
     const targetVoiceChannel = targetMember.voice.channel;
-    if (!targetVoiceChannel) {
-      return message.reply(`❌ **${targetMember.user.username}** is not connected to any voice channel!`);
-    }
+    if (!targetVoiceChannel) return message.reply(`❌ **${targetMember.user.username}** is not connected to any voice channel!`);
 
     try {
       await targetMember.voice.setChannel(authorVoiceChannel);
@@ -230,9 +225,33 @@ client.on('messageCreate', async (message) => {
     return message.reply('❌ You must be connected to a voice channel to use room commands.');
   }
 
+  // SPECIAL EXCEPTION: CLAIM COMMAND
+  if (command === 'claim') {
+    const currentOwner = roomOwners.get(voiceChannel.id);
+    if (currentOwner && currentOwner !== message.author.id) {
+      return message.reply('❌ This room is already actively owned by someone else in this session.');
+    }
+
+    try {
+      // Re-grant ownership in memory
+      roomOwners.set(voiceChannel.id, message.author.id);
+      
+      // Ensure they have the proper Discord channel permissions re-applied
+      await voiceChannel.permissionOverwrites.edit(message.author.id, { 
+        ManageChannels: true, Connect: true, Speak: true, SendMessages: true, ReadMessageHistory: true 
+      });
+
+      return message.reply('✅ You have successfully reclaimed ownership of this room! You can use `.v` commands again.');
+    } catch (err) {
+      console.error(`Claim command error: ${err.message}`);
+      return message.reply('❌ An error occurred while trying to claim the room.');
+    }
+  }
+
+  // For all other commands, verify ownership first
   const ownerId = roomOwners.get(voiceChannel.id);
   if (!ownerId || ownerId !== message.author.id) {
-    return message.reply('❌ You can only manage a custom voice channel that you created!');
+    return message.reply('❌ You can only manage a custom voice channel that you created! *(If the bot restarted, use `.v claim` first)*');
   }
 
   try {
