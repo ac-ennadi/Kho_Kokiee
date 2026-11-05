@@ -57,26 +57,31 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const guild = newState.guild;
 
-      // Base overwrites safely defining server-wide and user-specific access
+      // Base overwrites for @everyone and the joining user
       const overwrites = [
         {
-          id: guild.id, // @everyone role
+          id: guild.id, 
           deny: [PermissionsBitField.Flags.ViewChannel],
         },
         {
-          id: member.id, // The joining user
+          id: member.id, 
           allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
         },
       ];
 
-      // Safely add staff role permissions if valid
-      if (STAFF_ROLE_ID && STAFF_ROLE_ID.length > 5 && STAFF_ROLE_ID !== 'YOUR_STAFF_ROLE_TO_MENTION_ID_HERE') {
-        overwrites.push({
-          id: STAFF_ROLE_ID,
-          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
-        });
-      } else {
-        console.log(`[Warning] STAFF_ROLE_ID is missing or invalid in environment variables. Skipping staff overwrite.`);
+      // Safely verify if the staff role exists in the guild cache before adding it
+      let staffRoleMention = '';
+      if (STAFF_ROLE_ID) {
+        const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
+        if (staffRole) {
+          overwrites.push({
+            id: staffRole.id,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
+          });
+          staffRoleMention = `<@&${staffRole.id}>`;
+        } else {
+          console.log(`[Warning] STAFF_ROLE_ID (${STAFF_ROLE_ID}) was not found in guild roles cache. Skipping staff overwrite.`);
+        }
       }
 
       // Create the new voice channel named after the user
@@ -91,10 +96,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       await member.voice.setChannel(newChannel);
       console.log(`Created verification channel ${newChannel.name} and moved ${member.user.tag}`);
 
-      // Notify staff in a text channel
+      // Notify staff in a text channel if found
       const textChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && (c.name.includes('staff') || c.name.includes('general') || c.name.includes('verification')));
-      if (textChannel && STAFF_ROLE_ID) {
-        textChannel.send(`<@&${STAFF_ROLE_ID}> New verification session started for **${member.user.tag}** in voice channel **${newChannel.name}**.`);
+      if (textChannel && staffRoleMention) {
+        textChannel.send(`${staffRoleMention} New verification session started for **${member.user.tag}** in voice channel **${newChannel.name}**.`);
       }
 
     } catch (error) {
