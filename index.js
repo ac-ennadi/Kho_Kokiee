@@ -31,5 +31,6 @@ client.on('guildMemberAdd', async (member) => {
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+console.log("DEBUG TOKEN CHECK:", process.env.DISCORD_TOKEN ? `Loaded (${process.env.DISCORD_TOKEN.length} chars)` : "MISSING/UNDEFINED");
 
+client.login(process.env.DISCORD_TOKEN);
