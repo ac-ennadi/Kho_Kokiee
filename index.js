@@ -69,16 +69,27 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const guild = newState.guild;
 
+      // Base permissions for the custom room
+      const customOverwrites = [
+        {
+          id: member.id, // The owner gets full control
+          allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+        }
+      ];
+
+      // Explicitly block unverified users from seeing or joining the custom rooms
+      if (NOT_VERIFIED_ROLE_ID) {
+        customOverwrites.push({
+          id: NOT_VERIFIED_ROLE_ID,
+          deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect],
+        });
+      }
+
       const customChannel = await guild.channels.create({
         name: `🔊 ${member.user.username}'s Room`,
         type: ChannelType.GuildVoice,
         parent: CREATE_CATEGORY_ID && CREATE_CATEGORY_ID.length > 5 ? CREATE_CATEGORY_ID : null,
-        permissionOverwrites: [
-          {
-            id: member.id,
-            allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
-          }
-        ]
+        permissionOverwrites: customOverwrites
       });
 
       roomOwners.set(customChannel.id, member.id);
@@ -233,10 +244,8 @@ client.on('messageCreate', async (message) => {
     }
 
     try {
-      // Re-grant ownership in memory
       roomOwners.set(voiceChannel.id, message.author.id);
       
-      // Ensure they have the proper Discord channel permissions re-applied
       await voiceChannel.permissionOverwrites.edit(message.author.id, { 
         ManageChannels: true, Connect: true, Speak: true, SendMessages: true, ReadMessageHistory: true 
       });
