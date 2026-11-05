@@ -76,11 +76,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         if (staffRole) {
           overwrites.push({
             id: staffRole.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
           });
           staffRoleMention = `<@&${staffRole.id}>`;
         } else {
-          console.log(`[Warning] STAFF_ROLE_ID (${STAFF_ROLE_ID}) was not found in guild roles cache. Skipping staff overwrite.`);
+          console.log(`[Warning] STAFF_ROLE_ID (${STAFF_ROLE_ID}) was not found in guild roles cache.`);
         }
       }
 
@@ -96,10 +96,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       await member.voice.setChannel(newChannel);
       console.log(`Created verification channel ${newChannel.name} and moved ${member.user.tag}`);
 
-      // Notify staff in a text channel if found
-      const textChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && (c.name.includes('staff') || c.name.includes('general') || c.name.includes('verification')));
-      if (textChannel && staffRoleMention) {
-        textChannel.send(`${staffRoleMention} New verification session started for **${member.user.tag}** in voice channel **${newChannel.name}**.`);
+      // Send the staff ping directly inside the new voice channel's built-in text chat
+      if (staffRoleMention) {
+        setTimeout(async () => {
+          try {
+            await newChannel.send(`${staffRoleMention} New verification session started for **${member.user.tag}**. Please assist them here!`);
+            console.log(`Sent staff notification inside the voice channel chat.`);
+          } catch (err) {
+            console.error(`Failed to send message in voice channel text chat: ${err.message}`);
+          }
+        }, 1000); // 1-second delay to ensure channel connection is fully established
       }
 
     } catch (error) {
