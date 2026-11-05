@@ -1,16 +1,18 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField } = require('discord.js');
 
-const client = new Client({
+const client = new Date ? new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, // Required to read .v commands
   ],
   presence: {
     status: 'online',
     activities: [{ name: 'for new members', type: ActivityType.Watching }],
   },
-});
+}) : null;
 
 // Configuration IDs loaded securely from Railway Environment Variables
 const ROLE_ID = process.env.ROLE_ID;                    
@@ -20,6 +22,9 @@ const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
 const CATEGORY_ID = process.env.CATEGORY_ID || null;                  // Category for Verification VCs
 const CREATE_VC_ID = process.env.CREATE_VC_ID;                        // Hub channel ID for Join-to-Create
 const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    // Category for Custom Member VCs
+
+// In-memory tracker to remember who owns which custom voice channel { channelId: userId }
+const roomOwners = new Map();
 
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
@@ -47,6 +52,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const channel = oldState.channel;
     if (channel.members.size === 0) {
       try {
+        roomOwners.delete(channel.id); // Remove ownership tracking
         await channel.delete();
         console.log(`Deleted empty temporary channel: ${channel.name}`);
       } catch (err) {
@@ -66,11 +72,38 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         name: `🔊 ${member.user.username}'s Room`,
         type: ChannelType.GuildVoice,
         parent: CREATE_CATEGORY_ID && CREATE_CATEGORY_ID.length > 5 ? CREATE_CATEGORY_ID : null,
+        permissionOverwrites: [
+          {
+            id: member.id,
+            allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+          }
+        ]
       });
+
+      // Save ownership mapping
+      roomOwners.set(customChannel.id, member.id);
 
       // Move the user into their newly created custom channel
       await member.voice.setChannel(customChannel);
       console.log(`Created custom voice channel ${customChannel.name} and moved ${member.user.tag}`);
+
+      // Send instruction message mentioning the owner inside the voice channel chat
+      setTimeout(async () => {
+        try {
+          await customChannel.send(
+            `👋 Welcome to your custom room, <@${member.id}>!\n` +
+            `Here are the commands you can use to control your channel:\n` +
+            `• \`.v name <new name>\` - Rename your room\n` +
+            `• \`.v lock\` - Lock your room so no one else can join\n` +
+            `• \`.v unlock\` - Unlock your room\n` +
+            `• \`.v add @User\` (or \`.v permit @User\`) - Allow a specific user to join\n` +
+            `• \`.v reject @User\` - Block and kick a user from your room`
+          );
+        } catch (err) {
+          console.error(`Failed to send guide message in custom room: ${err.message}`);
+        }
+      }, 1000);
+
     } catch (error) {
       console.error(`Failed to create custom voice channel: ${error.message}`);
     }
@@ -80,31 +113,18 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
 
-    // Check if the user has the "not verified" role
     if (!member.roles.cache.has(NOT_VERIFIED_ROLE_ID)) {
       console.log(`[VoiceUpdate] User ${member.user.tag} joined target VC, but does NOT have the unverified role.`);
       return;
     }
 
-    console.log(`[VoiceUpdate] SUCCESS: User has the unverified role! Creating channel...`);
-
     try {
       const guild = newState.guild;
-
-      // Base overwrites for @everyone and the joining user
       const overwrites = [
-        {
-          id: guild.id, 
-          deny: [PermissionsBitField.Flags.ViewChannel],
-        },
-        {
-          id: member.id, 
-          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
-        },
+        { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+        { id: member.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak] },
       ];
 
-      // Safely verify if the staff role exists in the guild cache before adding it
-      let staffRoleMention = '';
       if (STAFF_ROLE_ID) {
         const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
         if (staffRole) {
@@ -112,13 +132,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             id: staffRole.id,
             allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
           });
-          staffRoleMention = `<@&${staffRole.id}>`;
-        } else {
-          console.log(`[Warning] STAFF_ROLE_ID (${STAFF_ROLE_ID}) was not found in guild roles cache.`);
         }
       }
 
-      // Create the new verification voice channel inside the verification category
       const newChannel = await guild.channels.create({
         name: `verify-${member.user.username}`,
         type: ChannelType.GuildVoice,
@@ -126,25 +142,79 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         permissionOverwrites: overwrites,
       });
 
-      // Move the user into the newly created voice channel
       await member.voice.setChannel(newChannel);
-      console.log(`Created verification channel ${newChannel.name} and moved ${member.user.tag}`);
 
-      // Send the staff ping directly inside the new voice channel's built-in text chat
-      if (staffRoleMention) {
+      if (STAFF_ROLE_ID) {
         setTimeout(async () => {
           try {
-            await newChannel.send(`${staffRoleMention} New verification session started for **${member.user.tag}**. Please assist them here!`);
-            console.log(`Sent staff notification inside the voice channel text chat.`);
-          } catch (err) {
-            console.error(`Failed to send message in voice channel text chat: ${err.message}`);
-          }
+            await newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session started for **${member.user.tag}**. Please assist them here!`);
+          } catch (err) {}
         }, 1000);
       }
-
     } catch (error) {
       console.error(`Failed to create verification voice channel: ${error.message}`);
     }
+  }
+});
+
+// 3. Handle Room Control Commands (.v name, .v lock, .v unlock, .v add, .v permit, .v reject)
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+  if (!message.content.startsWith('.v')) return;
+
+  const args = message.content.slice(2).trim().split(/ +/);
+  const command = args.shift().toLowerCase();
+
+  // Find the voice channel the user is currently connected to
+  const voiceChannel = message.member?.voice?.channel;
+  if (!voiceChannel) {
+    return message.reply('❌ You must be connected to a voice channel to use room commands.');
+  }
+
+  // Check if the user owns this specific custom room
+  const ownerId = roomOwners.get(voiceChannel.id);
+  if (!ownerId || ownerId !== message.author.id) {
+    return message.reply('❌ You can only manage a custom voice channel that you created!');
+  }
+
+  try {
+    if (command === 'name') {
+      const newName = args.join(' ');
+      if (!newName) return message.reply('❌ Please provide a new name. Example: `.v name Chill Lounge`');
+      await voiceChannel.setName(`🔊 ${newName}`);
+      await message.reply(`✅ Room renamed to **🔊 ${newName}**`);
+    } 
+    else if (command === 'lock') {
+      await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: false });
+      await message.reply('🔒 Room locked. Non-permitted users can no longer join.');
+    } 
+    else if (command === 'unlock') {
+      await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: null });
+      await message.reply('🔓 Room unlocked. Everyone can join again.');
+    } 
+    else if (command === 'add' || command === 'permit') {
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('❌ Please mention a user to add. Example: `.v add @Username`');
+      
+      await voiceChannel.permissionOverwrites.edit(targetUser.id, { Connect: true, ViewChannel: true, Speak: true });
+      await message.reply(`✅ Added ${targetUser} to your room.`);
+    } 
+    else if (command === 'reject') {
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) return message.reply('❌ Please mention a user to reject. Example: `.v reject @Username`');
+
+      await voiceChannel.permissionOverwrites.edit(targetUser.id, { Connect: false });
+      
+      const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+      if (targetMember && targetMember.voice.channelId === voiceChannel.id) {
+        await targetMember.voice.disconnect();
+      }
+
+      await message.reply(`🚫 Rejected ${targetUser} from your room.`);
+    }
+  } catch (err) {
+    console.error(`Command error: ${err.message}`);
+    message.reply('❌ An error occurred while executing that command.');
   }
 });
 
