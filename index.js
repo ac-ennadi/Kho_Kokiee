@@ -19,7 +19,7 @@ const TARGET_VC_ID = process.env.TARGET_VC_ID;
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
 const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
 });
 
@@ -57,31 +57,33 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const guild = newState.guild;
 
-      // Build permission overwrites safely
+      // Base overwrites safely defining server-wide and user-specific access
       const overwrites = [
         {
-          id: guild.id,
+          id: guild.id, // @everyone role
           deny: [PermissionsBitField.Flags.ViewChannel],
         },
         {
-          id: member.id,
+          id: member.id, // The joining user
           allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
         },
       ];
 
-      // Add staff role permissions only if STAFF_ROLE_ID is provided and valid
-      if (STAFF_ROLE_ID) {
+      // Safely add staff role permissions if valid
+      if (STAFF_ROLE_ID && STAFF_ROLE_ID.length > 5 && STAFF_ROLE_ID !== 'YOUR_STAFF_ROLE_TO_MENTION_ID_HERE') {
         overwrites.push({
           id: STAFF_ROLE_ID,
           allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
         });
+      } else {
+        console.log(`[Warning] STAFF_ROLE_ID is missing or invalid in environment variables. Skipping staff overwrite.`);
       }
 
       // Create the new voice channel named after the user
       const newChannel = await guild.channels.create({
         name: `verify-${member.user.username}`,
         type: ChannelType.GuildVoice,
-        parent: CATEGORY_ID || null,
+        parent: CATEGORY_ID && CATEGORY_ID.length > 5 ? CATEGORY_ID : null,
         permissionOverwrites: overwrites,
       });
 
