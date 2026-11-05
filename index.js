@@ -1,3 +1,43 @@
+const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField } = require('discord.js');
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
+  presence: {
+    status: 'online',
+    activities: [{ name: 'for new members', type: ActivityType.Watching }],
+  },
+});
+
+// Configuration IDs (Replace these with your actual IDs)
+const ROLE_ID = process.env.ROLE_ID || 'YOUR_ROLE_ID_HERE';                    // Role to assign on member join
+const NOT_VERIFIED_ROLE_ID = 'YOUR_NOT_VERIFIED_ROLE_ID_HERE';               // The "not verified" role ID
+const TARGET_VC_ID = 'YOUR_VERIFICATION_VOICE_CHANNEL_ID_HERE';              // The static verification room ID to watch
+const STAFF_ROLE_ID = 'YOUR_STAFF_ROLE_TO_MENTION_ID_HERE';                  // The role you want to mention in the new room
+const CATEGORY_ID = 'YOUR_VOICE_CHANNELS_CATEGORY_ID_HERE';                  // Optional: Category ID where new VCs should be created
+
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
+});
+
+// 1. Assign role when a new member joins the server
+client.on('guildMemberAdd', async (member) => {
+  try {
+    const role = member.guild.roles.cache.get(ROLE_ID);
+    if (!role) {
+      console.error('Role not found. Check your ROLE_ID.');
+      return;
+    }
+    await member.roles.add(role);
+    console.log(`Assigned ${role.name} to ${member.user.tag}`);
+  } catch (error) {
+    console.error(`Failed to assign role: ${error.message}`);
+  }
+});
+
 // 2. Handle voice channel verification workflow
 client.on('voiceStateUpdate', async (oldState, newState) => {
   console.log(`[VoiceUpdate] User ${newState.member?.user.tag} moved from channel ${oldState.channelId} to ${newState.channelId}`);
@@ -51,3 +91,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
   }
 });
+
+console.log("DEBUG TOKEN CHECK:", process.env.DISCORD_TOKEN ? `Loaded (${process.env.DISCORD_TOKEN.length} chars)` : "MISSING/UNDEFINED");
+
+client.login(process.env.DISCORD_TOKEN);
