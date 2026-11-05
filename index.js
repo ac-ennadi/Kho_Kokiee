@@ -17,8 +17,9 @@ const ROLE_ID = process.env.ROLE_ID;
 const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;               
 const TARGET_VC_ID = process.env.TARGET_VC_ID;              
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
-const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
-const CREATE_VC_ID = process.env.CREATE_VC_ID; // New: Hub channel ID for Join-to-Create
+const CATEGORY_ID = process.env.CATEGORY_ID || null;                  // Category for Verification VCs
+const CREATE_VC_ID = process.env.CREATE_VC_ID;                        // Hub channel ID for Join-to-Create
+const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    // Category for Custom Member VCs
 
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
@@ -41,7 +42,7 @@ client.on('guildMemberAdd', async (member) => {
 
 // 2. Handle voice channel workflows (Verification, Custom J2C, and Cleanup)
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  // A. CLEANUP: Check if someone left a temporary verification channel or custom room and it's now empty
+  // A. CLEANUP: Check if someone left a temporary channel and it's now empty
   if (oldState.channel && (oldState.channel.name.startsWith('verify-') || oldState.channel.name.includes("'s Room"))) {
     const channel = oldState.channel;
     if (channel.members.size === 0) {
@@ -60,11 +61,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const guild = newState.guild;
 
-      // Create a personalized voice channel for the member
+      // Create a personalized voice channel inside the custom J2C category
       const customChannel = await guild.channels.create({
         name: `🔊 ${member.user.username}'s Room`,
         type: ChannelType.GuildVoice,
-        parent: CATEGORY_ID && CATEGORY_ID.length > 5 ? CATEGORY_ID : null,
+        parent: CREATE_CATEGORY_ID && CREATE_CATEGORY_ID.length > 5 ? CREATE_CATEGORY_ID : null,
       });
 
       // Move the user into their newly created custom channel
@@ -75,7 +76,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
   }
 
-  // C. VERIFICATION WORKFLOW: Check if the user joined the specific verification voice channel
+  // C. VERIFICATION WORKFLOW: Check if the user joined the verification voice channel
   if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
 
@@ -117,7 +118,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         }
       }
 
-      // Create the new voice channel named after the user
+      // Create the new verification voice channel inside the verification category
       const newChannel = await guild.channels.create({
         name: `verify-${member.user.username}`,
         type: ChannelType.GuildVoice,
