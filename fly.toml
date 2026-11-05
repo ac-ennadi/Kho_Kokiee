@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for kho-kokiee on 2026-11-05T00:34:43Z
+# fly.toml app configuration file generated for kho-kokiee on 2026-11-05T00:41:43Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'kho-kokiee'
-primary_region = 'iad'
+primary_region = 'ams'
 
 [build]
 [processes]
