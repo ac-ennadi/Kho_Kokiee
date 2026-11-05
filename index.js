@@ -19,6 +19,7 @@ const ROLE_ID = process.env.ROLE_ID;
 const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;               
 const TARGET_VC_ID = process.env.TARGET_VC_ID;              
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
+const MOVE_ROLE_ID = process.env.MOVE_ROLE_ID;                        // Role allowed to use 'aji'
 const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
 const CREATE_VC_ID = process.env.CREATE_VC_ID;                        
 const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    
@@ -93,6 +94,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             `• \`.v name <new name>\` - Rename your room\n` +
             `• \`.v lock\` - Lock your room so no one else can join\n` +
             `• \`.v unlock\` - Unlock your room\n` +
+            `• \`.v limit <number>\` - Set a max user limit (0 for unlimited)\n` +
             `• \`.v add @User\` (or \`.v permit @User\`) - Allow a specific user to join\n` +
             `• \`.v reject @User\` - Block and kick a user from your room`
           );
@@ -157,9 +159,45 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  // A. BROADCAST / SAY COMMAND: .say <message> (Restricted to Staff Role)
+  // A. AJI COMMAND: aji @user (Pull someone into your voice channel)
+  if (message.content.toLowerCase().startsWith('aji ')) {
+    const hasMoveRole = MOVE_ROLE_ID && message.member.roles.cache.has(MOVE_ROLE_ID);
+    const hasStaffRole = STAFF_ROLE_ID && message.member.roles.cache.has(STAFF_ROLE_ID);
+    const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+    if (!hasMoveRole && !hasStaffRole && !isAdmin) {
+      return message.reply('❌ You do not have permission to use the `aji` command.').then(msg => {
+        setTimeout(() => msg.delete().catch(() => {}), 5000);
+      });
+    }
+
+    const targetMember = message.mentions.members.first();
+    if (!targetMember) {
+      return message.reply('❌ Please mention a user to move. Example: `aji @Username`');
+    }
+
+    const authorVoiceChannel = message.member.voice.channel;
+    if (!authorVoiceChannel) {
+      return message.reply('❌ You must be in a voice channel yourself to pull someone to you.');
+    }
+
+    const targetVoiceChannel = targetMember.voice.channel;
+    if (!targetVoiceChannel) {
+      return message.reply(`❌ **${targetMember.user.username}** is not connected to any voice channel!`);
+    }
+
+    try {
+      await targetMember.voice.setChannel(authorVoiceChannel);
+      await message.reply(`✅ Moved **${targetMember.user.username}** to your voice channel!`);
+    } catch (err) {
+      console.error(`Aji command error: ${err.message}`);
+      message.reply('❌ Failed to move the user. Make sure I have "Move Members" permissions.');
+    }
+    return;
+  }
+
+  // B. BROADCAST / SAY COMMAND: .say <message>
   if (message.content.startsWith('.say ')) {
-    // Check if the user has the staff role (or is a server Administrator)
     const hasStaffRole = STAFF_ROLE_ID && message.member.roles.cache.has(STAFF_ROLE_ID);
     const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
@@ -173,15 +211,15 @@ client.on('messageCreate', async (message) => {
     if (!broadcastText) return;
 
     try {
-      await message.delete(); // Delete command message
-      await message.channel.send(broadcastText); // Send broadcast as bot
+      await message.delete(); 
+      await message.channel.send(broadcastText); 
     } catch (err) {
       console.error(`Say command error: ${err.message}`);
     }
     return;
   }
 
-  // B. VOICE ROOM CONTROL COMMANDS: .v ...
+  // C. VOICE ROOM CONTROL COMMANDS: .v ...
   if (!message.content.startsWith('.v')) return;
 
   const args = message.content.slice(2).trim().split(/ +/);
@@ -212,6 +250,21 @@ client.on('messageCreate', async (message) => {
       await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: null });
       await message.reply('🔓 Room unlocked. Everyone can join again.');
     } 
+    else if (command === 'limit') {
+      const limit = parseInt(args[0], 10);
+      
+      if (isNaN(limit) || limit < 0 || limit > 99) {
+        return message.reply('❌ Please provide a valid number between 0 and 99. Example: `.v limit 5` (use 0 to remove the limit)');
+      }
+      
+      await voiceChannel.setUserLimit(limit);
+      
+      if (limit === 0) {
+        await message.reply('✅ Room user limit removed (unlimited).');
+      } else {
+        await message.reply(`✅ Room limit set to **${limit}** users.`);
+      }
+    }
     else if (command === 'add' || command === 'permit') {
       const targetUser = message.mentions.users.first();
       if (!targetUser) return message.reply('❌ Please mention a user to add. Example: `.v add @Username`');
