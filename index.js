@@ -18,6 +18,7 @@ const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;
 const TARGET_VC_ID = process.env.TARGET_VC_ID;              
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
 const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
+const CREATE_VC_ID = process.env.CREATE_VC_ID; // New: Hub channel ID for Join-to-Create
 
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
@@ -38,23 +39,43 @@ client.on('guildMemberAdd', async (member) => {
   }
 });
 
-// 2. Handle voice channel verification workflow and cleanup
+// 2. Handle voice channel workflows (Verification, Custom J2C, and Cleanup)
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  // A. CLEANUP: Check if someone left a temporary verification channel and it's now empty
-  if (oldState.channel && oldState.channel.name.startsWith('verify-')) {
+  // A. CLEANUP: Check if someone left a temporary verification channel or custom room and it's now empty
+  if (oldState.channel && (oldState.channel.name.startsWith('verify-') || oldState.channel.name.includes("'s Room"))) {
     const channel = oldState.channel;
-    // If no members are left in the temporary channel, delete it
     if (channel.members.size === 0) {
       try {
         await channel.delete();
-        console.log(`Deleted empty temporary verification channel: ${channel.name}`);
+        console.log(`Deleted empty temporary channel: ${channel.name}`);
       } catch (err) {
         console.error(`Failed to delete empty channel: ${err.message}`);
       }
     }
   }
 
-  // B. CREATION: Check if the user just joined the specific verification voice channel
+  // B. JOIN TO CREATE: Check if the user joined the "Create Channel" hub
+  if (CREATE_VC_ID && newState.channelId === CREATE_VC_ID && oldState.channelId !== CREATE_VC_ID) {
+    const member = newState.member;
+    try {
+      const guild = newState.guild;
+
+      // Create a personalized voice channel for the member
+      const customChannel = await guild.channels.create({
+        name: `🔊 ${member.user.username}'s Room`,
+        type: ChannelType.GuildVoice,
+        parent: CATEGORY_ID && CATEGORY_ID.length > 5 ? CATEGORY_ID : null,
+      });
+
+      // Move the user into their newly created custom channel
+      await member.voice.setChannel(customChannel);
+      console.log(`Created custom voice channel ${customChannel.name} and moved ${member.user.tag}`);
+    } catch (error) {
+      console.error(`Failed to create custom voice channel: ${error.message}`);
+    }
+  }
+
+  // C. VERIFICATION WORKFLOW: Check if the user joined the specific verification voice channel
   if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
 
