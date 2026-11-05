@@ -12,12 +12,12 @@ const client = new Client({
   },
 });
 
-// Configuration IDs (Replace these with your actual IDs)
-const ROLE_ID = process.env.ROLE_ID || 'YOUR_ROLE_ID_HERE';                    // Role to assign on member join
-const NOT_VERIFIED_ROLE_ID = 'YOUR_NOT_VERIFIED_ROLE_ID_HERE';               // The "not verified" role ID
-const TARGET_VC_ID = 'YOUR_VERIFICATION_VOICE_CHANNEL_ID_HERE';              // The static verification room ID to watch
-const STAFF_ROLE_ID = 'YOUR_STAFF_ROLE_TO_MENTION_ID_HERE';                  // The role you want to mention in the new room
-const CATEGORY_ID = 'YOUR_VOICE_CHANNELS_CATEGORY_ID_HERE';                  // Optional: Category ID where new VCs should be created
+// Configuration IDs loaded securely from Railway Environment Variables
+const ROLE_ID = process.env.ROLE_ID;                    
+const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;               
+const TARGET_VC_ID = process.env.TARGET_VC_ID;              
+const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
+const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
@@ -51,6 +51,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       console.log(`[VoiceUpdate] User ${member.user.tag} joined target VC, but does NOT have the unverified role.`);
       return;
     }
+
+    console.log(`[VoiceUpdate] SUCCESS: User has the unverified role! Creating channel...`);
 
     try {
       const guild = newState.guild;
