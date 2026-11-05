@@ -57,25 +57,32 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const guild = newState.guild;
 
-      // Create a new voice channel named after the user
+      // Build permission overwrites safely
+      const overwrites = [
+        {
+          id: guild.id,
+          deny: [PermissionsBitField.Flags.ViewChannel],
+        },
+        {
+          id: member.id,
+          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
+        },
+      ];
+
+      // Add staff role permissions only if STAFF_ROLE_ID is provided and valid
+      if (STAFF_ROLE_ID) {
+        overwrites.push({
+          id: STAFF_ROLE_ID,
+          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
+        });
+      }
+
+      // Create the new voice channel named after the user
       const newChannel = await guild.channels.create({
         name: `verify-${member.user.username}`,
         type: ChannelType.GuildVoice,
         parent: CATEGORY_ID || null,
-        permissionOverwrites: [
-          {
-            id: guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel],
-          },
-          {
-            id: member.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
-          },
-          {
-            id: STAFF_ROLE_ID,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak],
-          },
-        ],
+        permissionOverwrites: overwrites,
       });
 
       // Move the user into the newly created voice channel
@@ -84,7 +91,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
       // Notify staff in a text channel
       const textChannel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && (c.name.includes('staff') || c.name.includes('general') || c.name.includes('verification')));
-      if (textChannel) {
+      if (textChannel && STAFF_ROLE_ID) {
         textChannel.send(`<@&${STAFF_ROLE_ID}> New verification session started for **${member.user.tag}** in voice channel **${newChannel.name}**.`);
       }
 
