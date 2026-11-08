@@ -49,8 +49,12 @@ async function getAvailableGeminiModel() {
 
       console.log('Available Gemini models for this key:', models);
 
-      // Prioritized list of active free-tier models
-      const priority = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-flash'];
+      // Prioritized list of active free-tier models (newest stable first)
+      const priority = [
+        'gemini-2.0-flash-lite', 'gemini-2.0-flash',
+        'gemini-1.5-flash-8b', 'gemini-1.5-flash-latest', 'gemini-1.5-flash-002', 'gemini-1.5-flash-001',
+        'gemini-flash-2.0-lite', 'gemini-flash',
+      ];
       for (const pref of priority) {
         if (models.includes(pref)) {
           activeGeminiModel = pref;
@@ -59,10 +63,22 @@ async function getAvailableGeminiModel() {
         }
       }
 
-      const anyFlash = models.find(m => m.toLowerCase().includes('flash'));
+      // Skip deprecated 2.5/1.5-flash (removed for new users), prefer 2.0 family
+      const anyFlash = models.find(m => {
+        const lower = m.toLowerCase();
+        return lower.includes('flash') && !lower.includes('2.5') && !lower.includes('1.5-flash:');
+      });
       if (anyFlash) {
         activeGeminiModel = anyFlash;
         console.log(`🤖 Auto-selected flash model: ${activeGeminiModel}`);
+        return activeGeminiModel;
+      }
+
+      // Last resort: any flash at all
+      const lastResortFlash = models.find(m => m.toLowerCase().includes('flash'));
+      if (lastResortFlash) {
+        activeGeminiModel = lastResortFlash;
+        console.log(`🤖 Last-resort flash model: ${activeGeminiModel}`);
         return activeGeminiModel;
       }
 
@@ -435,6 +451,24 @@ const discordTools = [
           required: ['target_user'],
         },
       },
+      {
+        name: 'move_multiple_members',
+        description: 'Moves multiple users to a voice channel at once. Use when asked to move several people, e.g. "movi @X o @Y l voice", "jib @X o @Z hna", "move X and Y to channel".',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_users: {
+              type: 'STRING',
+              description: 'Comma-separated list of usernames, mentions, or display names (e.g. "@Alice, @Bob, zenin")',
+            },
+            destination: {
+              type: 'STRING',
+              description: 'Target voice channel name, here for caller channel, or a username whose current voice channel to use as destination',
+            },
+          },
+          required: ['target_users'],
+        },
+      },
     ],
   },
 ];
@@ -692,23 +726,49 @@ async function executeDiscordTool(name, args, message) {
     if (!targetVoice) {
       return {
         success: false,
-        error: `${targetMember.displayName} is not in any voice channel right now.`,
+        error: `${targetMember.displayName} is not in any voice channel right now. Tell caller in Moroccan Darija that the user must be in voice.`,
       };
     }
 
     let destinationChannel = caller.voice.channel;
-    if (args.destination && args.destination.toLowerCase() !== 'me' && args.destination.toLowerCase() !== 'here') {
+    if (args.destination && args.destination.toLowerCase() !== 'me' && args.destination.toLowerCase() !== 'here' && args.destination.toLowerCase() !== 'hna') {
       const cleanDest = args.destination.toLowerCase().replace(/^[#🔊\s]+/, '').trim();
-      const found = message.guild.channels.cache.find(
-        c => c.isVoiceBased() && (c.id === cleanDest || c.name.toLowerCase().includes(cleanDest))
-      );
-      if (found) destinationChannel = found;
+
+      // Try destination by mentioned user (e.g. "l tap dyal @AYA")
+      const destUserMention = args.destination.match(/<@!?(\d{17,20})>/);
+      if (destUserMention) {
+        const destMember = await message.guild.members.fetch(destUserMention[1]).catch(() => null);
+        if (destMember && destMember.voice.channel) {
+          destinationChannel = destMember.voice.channel;
+        }
+      } else {
+        // Try matching a member by name in the destination string (e.g. "dyal aya")
+        const words = cleanDest.split(/\s+/);
+        let foundByUser = null;
+        for (const word of words) {
+          if (word.length < 2 || ['dyal', 'tap', 'l', 'le', 'la', 'fi', 'f'].includes(word)) continue;
+          try {
+            const searched = await message.guild.members.fetch({ query: word, limit: 3 });
+            const match = searched.find(m => m.id !== message.author.id && m.id !== targetMember.id && m.voice && m.voice.channel);
+            if (match) { foundByUser = match.voice.channel; break; }
+          } catch (e) {}
+        }
+        if (foundByUser) {
+          destinationChannel = foundByUser;
+        } else {
+          // Fall back to named voice channel
+          const found = message.guild.channels.cache.find(
+            c => c.isVoiceBased() && (c.id === cleanDest || c.name.toLowerCase().includes(cleanDest))
+          );
+          if (found) destinationChannel = found;
+        }
+      }
     }
 
     if (!destinationChannel) {
       return {
         success: false,
-        error: `Caller ${caller.displayName} is not connected to any voice channel and no valid target channel was found.`,
+        error: `Caller ${caller.displayName} is not connected to any voice channel and no valid target channel was found. Tell them to join a voice channel first.`,
       };
     }
 
@@ -724,6 +784,91 @@ async function executeDiscordTool(name, args, message) {
     } catch (err) {
       return { success: false, error: `Failed to move: ${err.message}` };
     }
+  }
+
+  // 5b. MOVE MULTIPLE MEMBERS
+  if (name === 'move_multiple_members') {
+    if (!canCallerMove(caller)) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have permission to move members.`,
+      };
+    }
+
+    const rawUsers = args.target_users || '';
+    // Split by comma, " o ", " and ", " w " (Darija "and")
+    const userTokens = rawUsers.split(/,|\s+o\s+|\s+and\s+|\s+w\s+/i).map(s => s.trim()).filter(Boolean);
+
+    if (userTokens.length === 0) {
+      return { success: false, error: 'No users specified for bulk move.' };
+    }
+
+    // Resolve destination channel
+    let destChannel = caller.voice.channel;
+    const destArg = args.destination || '';
+    if (destArg && !['here', 'me', 'hna'].includes(destArg.toLowerCase().trim())) {
+      const cleanDest = destArg.toLowerCase().replace(/^[#🔊\s]+/, '').trim();
+      const destUserMention = destArg.match(/<@!?(\d{17,20})>/);
+      if (destUserMention) {
+        const destMember = await message.guild.members.fetch(destUserMention[1]).catch(() => null);
+        if (destMember && destMember.voice.channel) destChannel = destMember.voice.channel;
+      } else {
+        const words = cleanDest.split(/\s+/);
+        let foundByUser = null;
+        for (const word of words) {
+          if (word.length < 2 || ['dyal', 'tap', 'l', 'le', 'la', 'fi', 'f'].includes(word)) continue;
+          try {
+            const searched = await message.guild.members.fetch({ query: word, limit: 3 });
+            const match = searched.find(m => m.id !== message.author.id && m.voice && m.voice.channel);
+            if (match) { foundByUser = match.voice.channel; break; }
+          } catch (e) {}
+        }
+        if (foundByUser) {
+          destChannel = foundByUser;
+        } else {
+          const found = message.guild.channels.cache.find(
+            c => c.isVoiceBased() && (c.id === cleanDest || c.name.toLowerCase().includes(cleanDest))
+          );
+          if (found) destChannel = found;
+        }
+      }
+    }
+
+    if (!destChannel) {
+      return { success: false, error: `No valid destination found and caller ${caller.displayName} is not in voice.` };
+    }
+
+    // Resolve each user and move them
+    const moveResults = [];
+    await Promise.allSettled(userTokens.map(async (token) => {
+      try {
+        const member = await findTargetMember(message.guild, token, message.mentions, message.client.user.id);
+        if (!member) {
+          moveResults.push({ token, success: false, error: `User not found: ${token}` });
+          return;
+        }
+        if (!member.voice || !member.voice.channel) {
+          moveResults.push({ token, success: false, error: `${member.displayName} is not in voice` });
+          return;
+        }
+        await member.voice.setChannel(destChannel);
+        await sendLog(message.guild, `🧲 **AI Bulk Move:** <@${caller.id}> moved <@${member.id}> to \`${destChannel.name}\`.`);
+        moveResults.push({ token, success: true, user: member.displayName, mention: `<@${member.id}>` });
+      } catch (err) {
+        moveResults.push({ token, success: false, error: err.message });
+      }
+    }));
+
+    const succeeded = moveResults.filter(r => r.success);
+    const failed = moveResults.filter(r => !r.success);
+    return {
+      success: succeeded.length > 0,
+      moved: succeeded.map(r => r.mention || r.user).join(', '),
+      movedCount: succeeded.length,
+      failed: failed.map(r => `${r.token}: ${r.error}`).join('; '),
+      failedCount: failed.length,
+      channel: destChannel.name,
+    };
   }
 
   // 6. DISCONNECT MEMBER FROM VOICE
@@ -915,35 +1060,48 @@ client.on('messageCreate', async (message) => {
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction: `You are "kho Kokiee", a helpful, witty, and powerful Discord community assistant bot.
-Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling (Arabizi like "salam cv", "labas", "chno", "sketto", "jbedto"). Never use Arabic script. Keep answers short, usually 1-2 sentences.
+Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling (Arabizi like "salam cv", "labas", "chno", "sketto", "jbedto"). Never use Arabic script. Keep answers short, usually 1-3 sentences.
 
 MULTI-USER CONVERSATION TRACKING:
 You are in a Discord channel where multiple users converse with each other and with you.
 When recent channel history is provided in the prompt, use it to track who said what, remember names, understand context across multiple users, and address people by their names when relevant.
 
-You have Discord moderation tools:
-- give_role: Call this tool if someone asks to give/assign a role to someone (e.g. "3tih role Member", "give @User role VIP", "3ti role l @User").
-- remove_role: Call this tool if someone asks to remove/take away a role from someone (e.g. "7eyed role VIP mn @User", "remove role from @User").
-- mute_member: Call this tool if someone asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user").
-- unmute_member: Call this tool if someone asks to unmute a user (e.g. "telqo @user", "unmute @user", "tle9 l-user").
-- move_member: Call this tool if someone asks to pull, move, or bring a user to voice (e.g. "jib @user", "jbed @user", "aji @user", "move @user l voice").
-- disconnect_member: Call this tool if someone asks to disconnect or kick someone from voice (e.g. "kherrej @user mn voice", "disconnect @user").
-- deafen_member: Call this tool if someone asks to deafen a user in voice (e.g. "sdem @user", "deafen @user").
-- undeafen_member: Call this tool if someone asks to undeafen a user in voice (e.g. "7eyed sdem l @user", "undeafen @user").
+COMMAND PARSING (Moroccan Darija / Arabizi):
+- "muter @X", "sket @X", "kmih @X", "mute @X", "sketh" → use mute_member tool
+- "movi @X", "move @X", "jib @X", "jbed @X", "aji @X" → use move_member tool
+- "movi @X l tap dyal @Y" → use move_member with target_user=@X and destination=@Y (move X to Y's current voice channel)
+- "movi @X o @Y" or "jib @X o @Z" (multiple targets, o=and in Darija) → use move_multiple_members
+- "3tih role X", "give @X role Y", "3ti role l @X" → use give_role tool
+- "7eyed role X mn @Y", "remove role from @Y" → use remove_role tool
+- "telqo @X", "unmute @X", "tle9 @X" → use unmute_member tool
+- "kherrej @X mn voice", "disconnect @X" → use disconnect_member tool
+- "sdem @X", "deafen @X" → use deafen_member tool
+- "7eyed sdem l @X", "undeafen @X" → use undeafen_member tool
 
-For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
-When a tool returns a result, summarize the action happily or explain any permission issue politely in 1 short Moroccan Darija sentence.`,
+PERMISSIONS: Staff role members, admins, and owners can use moderation tools. If the caller lacks permission, explain clearly in Moroccan Darija WHY (not a generic error).
+
+TOOL RESULTS:
+When a tool returns success: Confirm the action with a short happy Darija message.
+When a tool returns failure, explain the ACTUAL problem in Moroccan Darija clearly:
+- Not in voice: "X machi f ay voice channel daba. Khasso ykun f voice bash yetmute/yetmovi."
+- No permission: "Ma 3endekch s-salahiya, ghir staff o admins yqdro."
+- Not found: "Ma lqitch dak l-user, 3awel mentioniw b @Username."
+- Role too high: "Role dyalu f9 mn role dyali, ma qdertch n-managiha."
+
+For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.`,
         tools: discordTools,
       });
 
-      const chat = model.startChat({
+      const chatConfig = {
         history: chatHistory.length > 0 ? chatHistory : undefined,
         generationConfig: {
           maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
           temperature: 0.7,
-          ...(modelName.includes('3.8') ? { thinkingConfig: { thinkingLevel: 'low' } } : {}),
         },
-      });
+      };
+      // Note: thinkingConfig only applies to experimental thinking models (2.5+)
+      // For stable 2.0 flash models, skip it entirely to avoid 400 errors
+      const chat = model.startChat(chatConfig);
 
       let result = await chat.sendMessage(finalPrompt);
       let responseText = '';
@@ -974,14 +1132,34 @@ When a tool returns a result, summarize the action happily or explain any permis
         if (!responseText && toolResult.success) {
           if (call.name === 'give_role') responseText = `Safi a khay, 3tit role **${toolResult.role}** l ${toolResult.mention || toolResult.user} ✅`;
           else if (call.name === 'remove_role') responseText = `Safi 7eyedt role **${toolResult.role}** mn ${toolResult.mention || toolResult.user} ✅`;
-          else if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} f l-voice 👍`;
-          else if (call.name === 'unmute_member') responseText = `Safi telqt ${toolResult.mention || toolResult.user} 👍`;
+          else if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} f l-voice 🔇`;
+          else if (call.name === 'unmute_member') responseText = `Safi telqt ${toolResult.mention || toolResult.user} ✅`;
           else if (call.name === 'move_member') responseText = `Hani jbedt ${toolResult.mention || toolResult.user} l ${toolResult.channel} 😉`;
+          else if (call.name === 'move_multiple_members') {
+            let txt = `Safi jbedt ${toolResult.moved} l ${toolResult.channel} ✅`;
+            if (toolResult.failedCount > 0) txt += ` (Ma qdertch njbed: ${toolResult.failed})`;
+            responseText = txt;
+          }
           else if (call.name === 'disconnect_member') responseText = `Safi kherrejt ${toolResult.mention || toolResult.user} mn l voice 🚪`;
           else if (call.name === 'deafen_member') responseText = `Safi sdemt ${toolResult.mention || toolResult.user} f voice 🔇`;
           else if (call.name === 'undeafen_member') responseText = `Safi 7eyedt sdem l ${toolResult.mention || toolResult.user} 🔊`;
         } else if (!responseText && !toolResult.success) {
-          responseText = `Ma qdertch ndir had l-action: ${toolResult.error}`;
+          // Give specific Darija error based on actual error message
+          const errMsg = toolResult.error || '';
+          if (errMsg.includes('not connected') || errMsg.includes('not in any voice')) {
+            const name = errMsg.split(' ')[0] || 'User';
+            responseText = `${name} machi f ay voice channel daba — khasso ykun f voice bash ndir had l-action.`;
+          } else if (errMsg.includes('Permission denied') || errMsg.includes('does not have')) {
+            responseText = 'Ma 3endekch s-salahiya bach dir had l-action. Ghir l-staff o l-admins yqdro 🙏';
+          } else if (errMsg.includes('not found') || errMsg.includes('Could not find')) {
+            responseText = 'Ma lqitch dak l-user. 3awel mentioniw b @Username 👀';
+          } else if (errMsg.includes('higher than') || errMsg.includes('hierarchy')) {
+            responseText = 'Ma qdertch n-managih — role dyalu f9 mn role dyali. Kallem l-admin yrfe3 role dyali 🙏';
+          } else if (errMsg.includes('Administrator')) {
+            responseText = 'Ma ymkench nmute l-admin 😅';
+          } else {
+            responseText = `W9e3 mochkil: ${errMsg.substring(0, 180)}`;
+          }
         }
       } else {
         try {
@@ -1013,12 +1191,27 @@ When a tool returns a result, summarize the action happily or explain any permis
       await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> mentioned the AI in <#${message.channel.id}>.`);
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
-      if (err.message && err.message.includes('404')) {
-        activeGeminiModel = null;
-      }
       aiUserCooldowns.delete(message.author.id);
-      await message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏').catch(async () => {
-        await message.channel.send('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏').catch(() => {});
+
+      let userErrorMsg = 'W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏';
+
+      if (err.message) {
+        if (err.message.includes('404') || err.message.includes('not found')) {
+          activeGeminiModel = null; // Force model re-detection next time
+          userErrorMsg = 'Mochkil m3a l-AI model — ghadi n-detectih mn jdid. 3awed jereb 🙏';
+        } else if (err.message.includes('429') || err.message.includes('quota') || err.message.includes('RESOURCE_EXHAUSTED')) {
+          userErrorMsg = 'Wslna l-7add l-AI dyal l-yom (quota). 3awed jereb f l-sa3a jaya ⏳';
+        } else if (err.message.includes('400') || err.message.includes('INVALID_ARGUMENT')) {
+          userErrorMsg = 'Mochkil f l-tlab (bad request). 7awel tkteb sou2al kher 🙏';
+        } else if (err.message.includes('503') || err.message.includes('unavailable') || err.message.includes('overloaded')) {
+          userErrorMsg = 'AI server m7mool daba, 3awed jereb b3d chwia ⏳';
+        } else if (err.message.includes('empty response') || err.message.includes('Empty')) {
+          userErrorMsg = 'AI ma jawbch (jawab khawi). 3awed jereb 🙏';
+        }
+      }
+
+      await message.reply(userErrorMsg).catch(async () => {
+        await message.channel.send(userErrorMsg).catch(() => {});
       });
     }
     return;
