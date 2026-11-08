@@ -37,7 +37,7 @@ if (GEMINI_API_KEY) {
 // Dynamically auto-detect active model supported by the API key
 async function getAvailableGeminiModel() {
   if (activeGeminiModel) return activeGeminiModel;
-  if (!GEMINI_API_KEY) return 'gemini-2.5-flash';
+  if (!GEMINI_API_KEY) return 'gemini-3.8-flash';
 
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
@@ -50,7 +50,7 @@ async function getAvailableGeminiModel() {
       console.log('Available Gemini models for this key:', models);
 
       // Prioritized list of active free-tier models
-      const priority = ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-flash'];
+      const priority = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-flash'];
       for (const pref of priority) {
         if (models.includes(pref)) {
           activeGeminiModel = pref;
@@ -76,14 +76,14 @@ async function getAvailableGeminiModel() {
     console.error(`Could not fetch model list: ${e.message}`);
   }
 
-  activeGeminiModel = 'gemini-2.5-flash';
+  activeGeminiModel = 'gemini-3.8-flash';
   return activeGeminiModel;
 }
 
 const aiUserCooldowns = new Map();
 const AI_COOLDOWN_MS = 5000;
 const AI_MAX_QUESTION_CHARS = 1500;
-const AI_MAX_OUTPUT_TOKENS = 180;
+const AI_MAX_OUTPUT_TOKENS = 800;
 
 // In-memory tracker to remember who owns which custom voice channel { channelId: userId }
 const roomOwners = new Map();
@@ -320,9 +320,17 @@ client.on('messageCreate', async (message) => {
         systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
       });
 
+      const generationConfig = {
+        maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+        temperature: 0.7,
+      };
+      if (modelName.includes('3.')) {
+        generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+      }
+
       const result = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: `Question: ${promptText}` }] }],
-        generationConfig: { maxOutputTokens: AI_MAX_OUTPUT_TOKENS, temperature: 0.7 },
+        generationConfig,
       });
 
       let responseText = result.response.text()?.trim();
