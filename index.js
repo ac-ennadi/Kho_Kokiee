@@ -259,13 +259,11 @@ Keep your answers concise, as Discord has a character limit.`;
 
       let responseText = "";
 
-      // Use gemini-3.8-flash as the primary model required by your project
       try {
         const model = genAI.getGenerativeModel({ model: 'gemini-3.8-flash', systemInstruction: systemInstructionConfig });
         const result = await model.generateContent(fullPrompt);
         responseText = result.response.text();
       } catch (primaryErr) {
-        // If 503 high demand occurs, retry once automatically after a brief pause
         console.warn(`Primary model busy (503), retrying... (${primaryErr.message})`);
         await new Promise(resolve => setTimeout(resolve, 1500));
         const retryModel = genAI.getGenerativeModel({ model: 'gemini-3.8-flash', systemInstruction: systemInstructionConfig });
