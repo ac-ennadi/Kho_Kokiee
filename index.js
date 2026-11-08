@@ -37,7 +37,7 @@ if (GEMINI_API_KEY) {
 // Dynamically auto-detect active model supported by the API key
 async function getAvailableGeminiModel() {
   if (activeGeminiModel) return activeGeminiModel;
-  if (!GEMINI_API_KEY) return 'gemini-3.8-flash';
+  if (!GEMINI_API_KEY) return 'gemini-3.5-flash-lite';
 
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
@@ -50,7 +50,7 @@ async function getAvailableGeminiModel() {
       console.log('Available Gemini models for this key:', models);
 
       // Prioritized list of active free-tier models
-      const priority = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-flash'];
+      const priority = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-flash'];
       for (const pref of priority) {
         if (models.includes(pref)) {
           activeGeminiModel = pref;
@@ -76,7 +76,7 @@ async function getAvailableGeminiModel() {
     console.error(`Could not fetch model list: ${e.message}`);
   }
 
-  activeGeminiModel = 'gemini-3.8-flash';
+  activeGeminiModel = 'gemini-3.5-flash-lite';
   return activeGeminiModel;
 }
 
@@ -331,6 +331,7 @@ client.on('messageCreate', async (message) => {
         generationConfig: {
           maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
           temperature: 0.7,
+          ...(modelName.includes('3.8') ? { thinkingConfig: { thinkingLevel: 'low' } } : {}),
         },
       });
 
