@@ -1,5 +1,4 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField, AuditLogEvent } = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const client = new Client({
   intents: [
@@ -26,12 +25,9 @@ const CREATE_VC_ID = process.env.CREATE_VC_ID;
 const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null; 
 
-// AI Setup
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-let genAI;
-if (GEMINI_API_KEY) {
-  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-}
+// OpenAI setup
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
 
 const aiUserCooldowns = new Map();
 const AI_COOLDOWN_MS = 5000;
@@ -56,7 +52,7 @@ async function sendLog(guild, messageText) {
 
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
-  if (!GEMINI_API_KEY) console.log("⚠️ GEMINI_API_KEY is missing. Mention-based AI replies will be disabled.");
+  if (!OPENAI_API_KEY) console.log("⚠️ OPENAI_API_KEY is missing. Mention-based AI replies will be disabled.");
 });
 
 // 1. Assign role when a new member joins the server
@@ -247,7 +243,7 @@ client.on('messageCreate', async (message) => {
   // AI replies when directly mentioned.
   const botMention = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
   if (botMention && botMention.test(message.content)) {
-    if (!genAI) return message.reply('Sme7 lia, khdma dyal AI mazal ma tf3elatch.');
+    if (!OPENAI_API_KEY) return message.reply('Sme7 lia, AI mazal ma tf3elatch.');
 
     const promptText = message.content.replace(botMention, '').trim();
     if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al mn b3d ma tmentionini 🙂');
@@ -262,22 +258,32 @@ client.on('messageCreate', async (message) => {
 
     try {
       await message.channel.sendTyping();
-      const model = genAI.getGenerativeModel({
-        model: 'gemini-3.8-flash',
-        systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
+      const apiResponse = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: OPENAI_MODEL,
+          reasoning: { effort: 'none' },
+          instructions: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`,
+          input: promptText,
+          max_output_tokens: AI_MAX_OUTPUT_TOKENS,
+          store: false,
+        }),
       });
-
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: `Question: ${promptText}` }] }],
-        generationConfig: { maxOutputTokens: AI_MAX_OUTPUT_TOKENS, temperature: 0.7 },
-      });
-      let responseText = result.response.text();
+      const apiData = await apiResponse.json();
+      if (!apiResponse.ok) {
+        throw new Error(apiData.error?.message || `OpenAI API returned status ${apiResponse.status}`);
+      }
+      let responseText = apiData.output_text?.trim();
+      if (!responseText) throw new Error('OpenAI returned an empty response');
       if (responseText.length > 2000) responseText = responseText.substring(0, 1996) + '...';
-
       await message.reply(responseText);
       await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> mentioned the AI in <#${message.channel.id}>.`);
     } catch (err) {
-      console.error(`AI API Error: ${err.message}`);
+      console.error(`OpenAI API Error: ${err.message}`);
       aiUserCooldowns.delete(message.author.id);
       message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏');
     }
