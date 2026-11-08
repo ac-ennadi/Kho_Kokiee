@@ -33,6 +33,11 @@ if (GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 }
 
+const aiUserCooldowns = new Map();
+const AI_COOLDOWN_MS = 5000;
+const AI_MAX_QUESTION_CHARS = 1500;
+const AI_MAX_OUTPUT_TOKENS = 180;
+
 // In-memory tracker to remember who owns which custom voice channel { channelId: userId }
 const roomOwners = new Map();
 
@@ -51,7 +56,7 @@ async function sendLog(guild, messageText) {
 
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
-  if (!GEMINI_API_KEY) console.log("⚠️ GEMINI_API_KEY is missing. The .ask command will be disabled.");
+  if (!GEMINI_API_KEY) console.log("⚠️ GEMINI_API_KEY is missing. Mention-based AI replies will be disabled.");
 });
 
 // 1. Assign role when a new member joins the server
@@ -239,43 +244,45 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  // AI INTEGRATION WITH PERSONA: .ask command
-  if (message.content.startsWith('.ask ')) {
-    if (!genAI) {
-      return message.reply('❌ AI is not configured. The owner needs to set `GEMINI_API_KEY`.');
+  // AI replies when directly mentioned.
+  const botMention = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
+  if (botMention && botMention.test(message.content)) {
+    if (!genAI) return message.reply('سمح ليا، خدمة AI مازال ما تفعّلاتش.');
+
+    const promptText = message.content.replace(botMention, '').trim();
+    if (!promptText) return message.reply('آش بغيتي تسولني؟ كتب السؤال من بعد المينسيون ديالي 🙂');
+    if (promptText.length > AI_MAX_QUESTION_CHARS) {
+      return message.reply(`السؤال طويل بزاف 😅 حاول تختاصرو لـ ${AI_MAX_QUESTION_CHARS} حرف.`);
     }
 
-    const promptText = message.content.slice(5).trim();
-    if (!promptText) return message.reply('❌ Please provide a question. Example: `.ask How do I get verified?`');
+    const now = Date.now();
+    const lastRequest = aiUserCooldowns.get(message.author.id) || 0;
+    if (now - lastRequest < AI_COOLDOWN_MS) return message.reply('عطيني غير لحظة ونرجع نجاوبك 🙂');
+    aiUserCooldowns.set(message.author.id, now);
 
     try {
       await message.channel.sendTyping();
-      const fullPrompt = `The user talking to you is named ${message.member.displayName}. They are asking: ${promptText}`;
-
-      const model = genAI.getGenerativeModel({ 
+      const model = genAI.getGenerativeModel({
         model: 'gemini-3.8-flash',
-        systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
-Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
-Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
-Keep your answers concise, as Discord has a character limit.`
+        systemInstruction: `You are a friendly Discord community assistant. Reply naturally and conversationally in Moroccan Darija. Match the script the user uses when practical (Arabic or Latin-script Darija). Keep answers short: usually 1-3 sentences, with no unnecessary introductions, repetition, or lists. Use Discord markdown only when it helps. If you do not know something, say so plainly. Be respectful and helpful.`
       });
 
-      const result = await model.generateContent(fullPrompt);
+      const result = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: `Question: ${promptText}` }] }],
+        generationConfig: { maxOutputTokens: AI_MAX_OUTPUT_TOKENS, temperature: 0.7 },
+      });
       let responseText = result.response.text();
-
-      if (responseText.length > 2000) {
-        responseText = responseText.substring(0, 1996) + '...';
-      }
+      if (responseText.length > 2000) responseText = responseText.substring(0, 1996) + '...';
 
       await message.reply(responseText);
-      await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> asked the AI a question in <#${message.channel.id}>.`);
+      await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> mentioned the AI in <#${message.channel.id}>.`);
     } catch (err) {
       console.error(`AI API Error: ${err.message}`);
-      message.reply(`❌ AI Error: \`${err.message}\``);
+      aiUserCooldowns.delete(message.author.id);
+      message.reply('وقع مشكل وأنا كنوجد الجواب. عاود جرّب من بعد شوية 🙏');
     }
     return;
   }
-
   // A. AJI COMMAND: aji @user
   if (message.content.toLowerCase().startsWith('aji ')) {
     const hasMoveRole = MOVE_ROLE_ID && message.member.roles.cache.has(MOVE_ROLE_ID);
