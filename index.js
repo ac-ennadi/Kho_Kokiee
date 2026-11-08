@@ -57,16 +57,14 @@ client.on('guildMemberAdd', async (member) => {
   }
 });
 
-// 2. NEW: Log Nickname Changes
+// 2. Log Nickname Changes
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  // Check if the nickname changed
   if (oldMember.nickname !== newMember.nickname) {
     const oldName = oldMember.nickname || oldMember.user.username;
     const newName = newMember.nickname || newMember.user.username;
     
     let executorString = `<@${newMember.id}> (Self-changed)`;
 
-    // Check the Audit Log to see if a Staff member changed it
     try {
       const fetchedLogs = await newMember.guild.fetchAuditLogs({
         limit: 1,
@@ -74,33 +72,26 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
       });
       const updateLog = fetchedLogs.entries.first();
 
-      // If a log exists for this user from the last 3 seconds, grab the executor
       if (updateLog && updateLog.target.id === newMember.id && (Date.now() - updateLog.createdTimestamp < 3000)) {
         executorString = `<@${updateLog.executor.id}>`;
       }
-    } catch (e) {
-      // Bot might lack "View Audit Log" permission, fail gracefully
-    }
+    } catch (e) {}
 
     await sendLog(newMember.guild, `📝 **Nickname Change:** ${executorString} changed the nickname of <@${newMember.id}> from \`${oldName}\` to \`${newName}\`.`);
   }
 });
 
-// 3. Handle voice channel workflows (Verification, Custom J2C, Cleanup, and Moves)
+// 3. Handle voice channel workflows, cleanup, and voice moderation logs
 client.on('voiceStateUpdate', async (oldState, newState) => {
   
-  // A. LOGGING VOICE MOVES (When old channel and new channel exist, but are different)
+  // A. LOGGING VOICE MOVES
   if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
     let executorString = `<@${newState.member.id}> (Self-moved)`;
 
     try {
-      const fetchedLogs = await newState.guild.fetchAuditLogs({
-        limit: 1,
-        type: AuditLogEvent.MemberMove,
-      });
+      const fetchedLogs = await newState.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberMove });
       const moveLog = fetchedLogs.entries.first();
 
-      // If a mod drags a user, it generates a MemberMove audit log instantly
       if (moveLog && (Date.now() - moveLog.createdTimestamp < 3000)) {
         executorString = `<@${moveLog.executor.id}> (Moderator)`;
       }
@@ -109,7 +100,30 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     await sendLog(newState.guild, `🔀 **Voice Move:** ${executorString} moved <@${newState.member.id}> from \`${oldState.channel.name}\` to \`${newState.channel.name}\`.`);
   }
 
-  // B. CLEANUP: Delete empty temporary rooms
+  // B. LOGGING SERVER MUTE AND DEAFEN
+  if (oldState.serverMute !== newState.serverMute || oldState.serverDeaf !== newState.serverDeaf) {
+    let action = "";
+    if (!oldState.serverMute && newState.serverMute) action = "server muted";
+    else if (oldState.serverMute && !newState.serverMute) action = "server unmuted";
+    else if (!oldState.serverDeaf && newState.serverDeaf) action = "server deafened";
+    else if (oldState.serverDeaf && !newState.serverDeaf) action = "server undeafened";
+
+    if (action) {
+      let executorString = "A moderator";
+      try {
+        const fetchedLogs = await newState.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberUpdate });
+        const updateLog = fetchedLogs.entries.first();
+
+        if (updateLog && updateLog.target.id === newState.member.id && (Date.now() - updateLog.createdTimestamp < 3000)) {
+          executorString = `<@${updateLog.executor.id}>`;
+        }
+      } catch (err) {}
+
+      await sendLog(newState.guild, `🔇 **Voice Moderation:** ${executorString} ${action} <@${newState.member.id}>.`);
+    }
+  }
+
+  // C. CLEANUP: Delete empty temporary rooms
   if (oldState.channel) {
     const channel = oldState.channel;
     const isVerifyChannel = channel.name.startsWith('verify-');
@@ -124,7 +138,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
   }
 
-  // C. JOIN TO CREATE: Custom member rooms
+  // D. JOIN TO CREATE: Custom member rooms
   if (CREATE_VC_ID && newState.channelId === CREATE_VC_ID && oldState.channelId !== CREATE_VC_ID) {
     const member = newState.member;
     try {
@@ -169,7 +183,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     } catch (error) {}
   }
 
-  // D. VERIFICATION WORKFLOW
+  // E. VERIFICATION WORKFLOW
   if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
     if (!member.roles.cache.has(NOT_VERIFIED_ROLE_ID)) return;
@@ -238,8 +252,7 @@ client.on('messageCreate', async (message) => {
     try {
       await targetMember.voice.setChannel(authorVoiceChannel);
       await message.reply(`✅ Moved **${targetMember.displayName}** to your voice channel!`);
-      // The audit log will natively catch this, but we explicitly log the command usage too
-      await sendLog(message.guild, `🧲 **Aji Command:** <@${message.author.id}> pulled <@${targetMember.id}> into their voice channel.`);
+      await sendLog(message.guild, `🧲 **Move Action:** <@${message.author.id}> used \`aji\` to move <@${targetMember.id}> into their voice channel.`);
     } catch (err) {
       message.reply('❌ Failed to move the user. Make sure I have "Move Members" permissions.');
     }
