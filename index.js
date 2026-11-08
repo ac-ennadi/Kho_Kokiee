@@ -559,7 +559,29 @@ client.on('messageCreate', async (message) => {
     if (now - lastRequest < AI_COOLDOWN_MS) return message.reply('3tini ghir chwia w nrje3 njawbek 🙂');
     aiUserCooldowns.set(message.author.id, now);
 
-    // Build context history from replied message chain
+    // 1. Build multi-user conversation context from recent channel messages
+    let channelContext = '';
+    try {
+      const recentMessages = await message.channel.messages.fetch({ limit: 10, before: message.id }).catch(() => null);
+      if (recentMessages && recentMessages.size > 0) {
+        const chronological = Array.from(recentMessages.values())
+          .filter(m => !m.author.bot || m.author.id === client.user.id) // Only users and this bot
+          .filter(m => (Date.now() - m.createdTimestamp) < 30 * 60 * 1000) // Within last 30 minutes
+          .reverse(); // Chronological order
+
+        if (chronological.length > 0) {
+          channelContext = chronological.map(m => {
+            const sender = m.author.id === client.user.id ? 'kho Kokiee (Bot)' : (m.member?.displayName || m.author.username);
+            const cleanContent = botMention ? m.content.replace(botMention, '').trim() : m.content.trim();
+            return `[${sender}]: ${cleanContent}`;
+          }).filter(line => line.trim().length > 0).join('\n');
+        }
+      }
+    } catch (contextErr) {
+      console.warn(`[AI Multi-User Context] Warning: ${contextErr.message}`);
+    }
+
+    // 2. Build direct reply history if this message was a reply to the bot
     const chatHistory = [];
     if (referencedMessage) {
       try {
@@ -583,32 +605,42 @@ client.on('messageCreate', async (message) => {
           });
         }
 
-        // Gemini history must start with 'user'
         if (chatHistory.length > 0 && chatHistory[0].role === 'model') {
           chatHistory.unshift({
             role: 'user',
             parts: [{ text: 'Question: salam' }],
           });
         }
-      } catch (contextErr) {
-        console.warn(`[AI Context] Warning: ${contextErr.message}`);
-      }
+      } catch (e) {}
+    }
+
+    // 3. Assemble prompt with multi-user context
+    const callerName = message.member?.displayName || message.author.username;
+    let finalPrompt = '';
+    if (channelContext) {
+      finalPrompt = `Recent channel conversation with multiple users:\n${channelContext}\n\nCurrent message from [${callerName}]:\n${promptText}`;
+    } else {
+      finalPrompt = `[${callerName}]: ${promptText}`;
     }
 
     try {
       await message.channel.sendTyping();
       const modelName = await getAvailableGeminiModel();
-      console.log(`[AI] Processing query from ${message.author.tag}: "${promptText}" using ${modelName}`);
+      console.log(`[AI] Processing query from ${callerName} (${message.author.tag}): "${promptText}" using ${modelName}`);
       
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction: `You are "kho Kokiee", a helpful, witty, and powerful Discord community assistant bot.
 Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling (Arabizi like "salam cv", "labas", "chno", "sketto", "jbedto"). Never use Arabic script. Keep answers short, usually 1-2 sentences.
 
+MULTI-USER CONVERSATION TRACKING:
+You are in a Discord channel where multiple users converse with each other and with you.
+When recent channel history is provided in the prompt, use it to track who said what, remember names, understand context across multiple users, and address people by their names when relevant.
+
 You have Discord moderation tools:
-- mute_member: Call this tool if someone asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user").
+- mute_member: Call this tool if an authorized user asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user"). If they say "sketto" (mute him) without mentioning a name, identify who they are referring to from the recent conversation history!
 - unmute_member: Call this tool if someone asks to unmute a user (e.g. "telqo @user", "unmute @user", "tle9 l-user").
-- move_member: Call this tool if someone in voice asks to pull, move, or bring a user to their channel (e.g. "jib @user", "jbed @user", "aji @user", "move @user", "jib l3ndi @user").
+- move_member: Call this tool if someone in voice asks to pull, move, or bring a user to their channel (e.g. "jib @user", "jbed @user", "aji @user", "move @user", "jib l3ndi @user"). If they refer to someone from the recent conversation, identify them!
 
 For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
 When a tool returns a result, summarize the action happily or explain any permission issue politely in 1 short Moroccan Darija sentence.`,
@@ -624,7 +656,7 @@ When a tool returns a result, summarize the action happily or explain any permis
         },
       });
 
-      let result = await chat.sendMessage(`Question: ${promptText}`);
+      let result = await chat.sendMessage(finalPrompt);
       let responseText = '';
 
       const functionCalls = result.response.functionCalls();
