@@ -252,7 +252,7 @@ client.on('messageCreate', async (message) => {
       await message.channel.sendTyping();
 
       const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
 Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
 Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
@@ -272,7 +272,7 @@ Keep your answers concise, as Discord has a character limit.`
       await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> asked the AI a question in <#${message.channel.id}>.`);
     } catch (err) {
       console.error(`AI API Error: ${err.message}`);
-      message.reply('❌ An error occurred while generating the AI response. Try again later.');
+      message.reply(`❌ AI Error: \`${err.message}\``);
     }
     return;
   }
