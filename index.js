@@ -213,6 +213,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         {
           id: member.id, 
           allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+        },
+        {
+          id: client.user.id,
+          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels],
         }
       ];
 
@@ -315,29 +319,47 @@ client.on('messageCreate', async (message) => {
     try {
       await message.channel.sendTyping();
       const modelName = await getAvailableGeminiModel();
+      console.log(`[AI] Processing query from ${message.author.tag}: "${promptText}" using ${modelName}`);
+      
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
       });
 
-      const generationConfig = {
-        maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
-        temperature: 0.7,
-      };
-      if (modelName.includes('3.')) {
-        generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
-      }
-
       const result = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: `Question: ${promptText}` }] }],
-        generationConfig,
+        generationConfig: {
+          maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+          temperature: 0.7,
+        },
       });
 
-      let responseText = result.response.text()?.trim();
+      let responseText = '';
+      try {
+        responseText = result.response.text()?.trim();
+      } catch (textErr) {
+        console.warn(`[AI] response.text() warning: ${textErr.message}`);
+      }
+
+      if (!responseText) {
+        const parts = result.response?.candidates?.[0]?.content?.parts || [];
+        const nonThought = parts.filter(p => !p.thought && p.text);
+        if (nonThought.length > 0) {
+          responseText = nonThought.map(p => p.text).join('\n').trim();
+        } else {
+          responseText = parts.map(p => p.text).filter(Boolean).join('\n').trim();
+        }
+      }
+
       if (!responseText) throw new Error('Gemini returned an empty response');
       if (responseText.length > 2000) responseText = responseText.substring(0, 1996) + '...';
 
-      await message.reply(responseText);
+      console.log(`[AI] Successfully generated reply (${responseText.length} chars)`);
+      await message.reply(responseText).catch(async (replyErr) => {
+        console.warn(`[AI] message.reply failed (${replyErr.message}), falling back to channel.send...`);
+        return message.channel.send(responseText);
+      });
+
       await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> mentioned the AI in <#${message.channel.id}>.`);
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
@@ -345,7 +367,9 @@ client.on('messageCreate', async (message) => {
         activeGeminiModel = null;
       }
       aiUserCooldowns.delete(message.author.id);
-      message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏');
+      await message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏').catch(async () => {
+        await message.channel.send('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏').catch(() => {});
+      });
     }
     return;
   }
