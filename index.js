@@ -251,22 +251,19 @@ client.on('messageCreate', async (message) => {
     try {
       await message.channel.sendTyping();
 
-      // Configure the model with a System Instruction to define its identity
       const model = genAI.getGenerativeModel({ 
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.5-flash',
         systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
 Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
 Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
 Keep your answers concise, as Discord has a character limit.`
       });
 
-      // Pass the user's name in the prompt so the bot knows who is talking to it!
       const fullPrompt = `The user talking to you is named ${message.member.displayName}. They are asking: ${promptText}`;
 
       const result = await model.generateContent(fullPrompt);
       let responseText = result.response.text();
 
-      // Ensure the message fits within Discord's 2000 character limit
       if (responseText.length > 2000) {
         responseText = responseText.substring(0, 1996) + '...';
       }
