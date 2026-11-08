@@ -252,7 +252,7 @@ client.on('messageCreate', async (message) => {
       await message.channel.sendTyping();
 
       const model = genAI.getGenerativeModel({ 
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.0-flash',
         systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
 Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
 Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
