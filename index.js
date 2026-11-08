@@ -28,10 +28,56 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
 
 // Google Gemini AI setup (100% Free tier on Google AI Studio)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+let activeGeminiModel = process.env.GEMINI_MODEL || null;
 let genAI = null;
 if (GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+}
+
+// Dynamically auto-detect active model supported by the API key
+async function getAvailableGeminiModel() {
+  if (activeGeminiModel) return activeGeminiModel;
+  if (!GEMINI_API_KEY) return 'gemini-2.5-flash';
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
+    if (res.ok) {
+      const data = await res.json();
+      const models = (data.models || [])
+        .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+        .map(m => m.name.replace(/^models\//, ''));
+
+      console.log('Available Gemini models for this key:', models);
+
+      // Prioritized list of active free-tier models
+      const priority = ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-flash'];
+      for (const pref of priority) {
+        if (models.includes(pref)) {
+          activeGeminiModel = pref;
+          console.log(`🤖 Auto-selected Gemini model: ${activeGeminiModel}`);
+          return activeGeminiModel;
+        }
+      }
+
+      const anyFlash = models.find(m => m.toLowerCase().includes('flash'));
+      if (anyFlash) {
+        activeGeminiModel = anyFlash;
+        console.log(`🤖 Auto-selected flash model: ${activeGeminiModel}`);
+        return activeGeminiModel;
+      }
+
+      if (models.length > 0) {
+        activeGeminiModel = models[0];
+        console.log(`🤖 Auto-selected model: ${activeGeminiModel}`);
+        return activeGeminiModel;
+      }
+    }
+  } catch (e) {
+    console.error(`Could not fetch model list: ${e.message}`);
+  }
+
+  activeGeminiModel = 'gemini-2.5-flash';
+  return activeGeminiModel;
 }
 
 const aiUserCooldowns = new Map();
@@ -55,9 +101,14 @@ async function sendLog(guild, messageText) {
   }
 }
 
-client.once('clientReady', () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
-  if (!GEMINI_API_KEY) console.log("⚠️ GEMINI_API_KEY is missing. Mention-based AI replies will be disabled.");
+  if (!GEMINI_API_KEY) {
+    console.log("⚠️ GEMINI_API_KEY is missing. Mention-based AI replies will be disabled.");
+  } else {
+    const selectedModel = await getAvailableGeminiModel();
+    console.log(`🤖 Gemini AI ready with model: ${selectedModel}`);
+  }
 });
 
 // 1. Assign role when a new member joins the server
@@ -263,8 +314,9 @@ client.on('messageCreate', async (message) => {
 
     try {
       await message.channel.sendTyping();
+      const modelName = await getAvailableGeminiModel();
       const model = genAI.getGenerativeModel({
-        model: GEMINI_MODEL,
+        model: modelName,
         systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
       });
 
@@ -281,6 +333,9 @@ client.on('messageCreate', async (message) => {
       await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> mentioned the AI in <#${message.channel.id}>.`);
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
+      if (err.message && err.message.includes('404')) {
+        activeGeminiModel = null;
+      }
       aiUserCooldowns.delete(message.author.id);
       message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏');
     }
