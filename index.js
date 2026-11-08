@@ -252,24 +252,16 @@ client.on('messageCreate', async (message) => {
       await message.channel.sendTyping();
       const fullPrompt = `The user talking to you is named ${message.member.displayName}. They are asking: ${promptText}`;
 
-      const systemInstructionConfig = `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-3.8-flash',
+        systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
 Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
 Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
-Keep your answers concise, as Discord has a character limit.`;
+Keep your answers concise, as Discord has a character limit.`
+      });
 
-      let responseText = "";
-
-      try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-3.8-flash', systemInstruction: systemInstructionConfig });
-        const result = await model.generateContent(fullPrompt);
-        responseText = result.response.text();
-      } catch (primaryErr) {
-        console.warn(`Primary model busy (503), retrying... (${primaryErr.message})`);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        const retryModel = genAI.getGenerativeModel({ model: 'gemini-3.8-flash', systemInstruction: systemInstructionConfig });
-        const retryResult = await retryModel.generateContent(fullPrompt);
-        responseText = retryResult.response.text();
-      }
+      const result = await model.generateContent(fullPrompt);
+      let responseText = result.response.text();
 
       if (responseText.length > 2000) {
         responseText = responseText.substring(0, 1996) + '...';
