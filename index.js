@@ -247,24 +247,24 @@ client.on('messageCreate', async (message) => {
   // AI replies when directly mentioned.
   const botMention = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
   if (botMention && botMention.test(message.content)) {
-    if (!genAI) return message.reply('سمح ليا، خدمة AI مازال ما تفعّلاتش.');
+    if (!genAI) return message.reply('Sme7 lia, khdma dyal AI mazal ma tf3elatch.');
 
     const promptText = message.content.replace(botMention, '').trim();
-    if (!promptText) return message.reply('آش بغيتي تسولني؟ كتب السؤال من بعد المينسيون ديالي 🙂');
+    if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al mn b3d ma tmentionini 🙂');
     if (promptText.length > AI_MAX_QUESTION_CHARS) {
-      return message.reply(`السؤال طويل بزاف 😅 حاول تختاصرو لـ ${AI_MAX_QUESTION_CHARS} حرف.`);
+      return message.reply(`Sou2al twil bzaf 😅 7awel tkhtasro l ${AI_MAX_QUESTION_CHARS} 7arf.`);
     }
 
     const now = Date.now();
     const lastRequest = aiUserCooldowns.get(message.author.id) || 0;
-    if (now - lastRequest < AI_COOLDOWN_MS) return message.reply('عطيني غير لحظة ونرجع نجاوبك 🙂');
+    if (now - lastRequest < AI_COOLDOWN_MS) return message.reply('3tini ghir chwia w nrje3 njawbek 🙂');
     aiUserCooldowns.set(message.author.id, now);
 
     try {
       await message.channel.sendTyping();
       const model = genAI.getGenerativeModel({
         model: 'gemini-3.8-flash',
-        systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "شنو" only when it feels natural (prefer Latin spelling such as "chno"). Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
+        systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
       });
 
       const result = await model.generateContent({
@@ -279,7 +279,7 @@ client.on('messageCreate', async (message) => {
     } catch (err) {
       console.error(`AI API Error: ${err.message}`);
       aiUserCooldowns.delete(message.author.id);
-      message.reply('وقع مشكل وأنا كنوجد الجواب. عاود جرّب من بعد شوية 🙏');
+      message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏');
     }
     return;
   }
