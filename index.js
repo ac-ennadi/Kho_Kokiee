@@ -179,13 +179,13 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
           await customChannel.send(
             `👋 Welcome to your custom room, <@${member.id}>!\n` +
             `Here are the commands you can use to control your channel:\n` +
-            `• \`.v name <new name>\` - Rename your room\n` +
-            `• \`.v lock\` - Lock your room so no one else can join\n` +
-            `• \`.v unlock\` - Unlock your room\n` +
-            `• \`.v limit <number>\` - Set a max user limit (0 for unlimited)\n` +
-            `• \`.v add @User\` (or \`.v permit @User\`) - Allow a specific user to join\n` +
-            `• \`.v reject @User\` - Block and kick a user from your room\n` +
-            `• \`.v claim\` - Reclaim ownership if the bot restarts`
+            `• \`.a name <new name>\` - Rename your room\n` +
+            `• \`.a lock\` - Lock your room so no one else can join\n` +
+            `• \`.a unlock\` - Unlock your room\n` +
+            `• \`.a limit <number>\` - Set a max user limit (0 for unlimited)\n` +
+            `• \`.a add @User\` (or \`.v permit @User\`) - Allow a specific user to join\n` +
+            `• \`.a reject @User\` - Block and kick a user from your room\n` +
+            `• \`.a claim\` - Reclaim ownership if the bot restarts`
           );
         } catch (err) {}
       }, 1000);
