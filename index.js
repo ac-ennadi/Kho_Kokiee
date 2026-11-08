@@ -327,7 +327,7 @@ Keep your answers concise, as Discord has a character limit.`
   }
 
   // C. VOICE ROOM CONTROL COMMANDS: .v ...
-  if (!message.content.startsWith('.v')) return;
+  if (!message.content.startsWith('.a')) return;
   const args = message.content.slice(2).trim().split(/ +/);
   const command = args.shift().toLowerCase();
   const voiceChannel = message.member?.voice?.channel;
