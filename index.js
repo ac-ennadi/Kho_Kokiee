@@ -259,16 +259,18 @@ Keep your answers concise, as Discord has a character limit.`;
 
       let responseText = "";
 
-      // Use gemini-2.5-flash as the primary stable model
+      // Use gemini-3.8-flash as the primary model required by your project
       try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', systemInstruction: systemInstructionConfig });
+        const model = genAI.getGenerativeModel({ model: 'gemini-3.8-flash', systemInstruction: systemInstructionConfig });
         const result = await model.generateContent(fullPrompt);
         responseText = result.response.text();
       } catch (primaryErr) {
-        console.warn(`Primary model failed, trying fallback... (${primaryErr.message})`);
-        const fallbackModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', systemInstruction: systemInstructionConfig });
-        const fallbackResult = await fallbackModel.generateContent(fullPrompt);
-        responseText = fallbackResult.response.text();
+        // If 503 high demand occurs, retry once automatically after a brief pause
+        console.warn(`Primary model busy (503), retrying... (${primaryErr.message})`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const retryModel = genAI.getGenerativeModel({ model: 'gemini-3.8-flash', systemInstruction: systemInstructionConfig });
+        const retryResult = await retryModel.generateContent(fullPrompt);
+        responseText = retryResult.response.text();
       }
 
       if (responseText.length > 2000) {
