@@ -250,19 +250,26 @@ client.on('messageCreate', async (message) => {
 
     try {
       await message.channel.sendTyping();
-
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-3.8-flash',
-        systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
-Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
-Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
-Keep your answers concise, as Discord has a character limit.`
-      });
-
       const fullPrompt = `The user talking to you is named ${message.member.displayName}. They are asking: ${promptText}`;
 
-      const result = await model.generateContent(fullPrompt);
-      let responseText = result.response.text();
+      const systemInstructionConfig = `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
+Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
+Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
+Keep your answers concise, as Discord has a character limit.`;
+
+      let responseText = "";
+
+      // Use gemini-2.5-flash as the primary stable model
+      try {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash', systemInstruction: systemInstructionConfig });
+        const result = await model.generateContent(fullPrompt);
+        responseText = result.response.text();
+      } catch (primaryErr) {
+        console.warn(`Primary model failed, trying fallback... (${primaryErr.message})`);
+        const fallbackModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash', systemInstruction: systemInstructionConfig });
+        const fallbackResult = await fallbackModel.generateContent(fullPrompt);
+        responseText = fallbackResult.response.text();
+      }
 
       if (responseText.length > 2000) {
         responseText = responseText.substring(0, 1996) + '...';
@@ -326,7 +333,7 @@ Keep your answers concise, as Discord has a character limit.`
     return;
   }
 
-  // C. VOICE ROOM CONTROL COMMANDS: .a ... (Changed from .v)
+  // C. VOICE ROOM CONTROL COMMANDS: .a ...
   if (!message.content.startsWith('.a')) return;
   const args = message.content.slice(2).trim().split(/ +/);
   const command = args.shift().toLowerCase();
