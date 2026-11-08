@@ -183,7 +183,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
             `• \`.a lock\` - Lock your room so no one else can join\n` +
             `• \`.a unlock\` - Unlock your room\n` +
             `• \`.a limit <number>\` - Set a max user limit (0 for unlimited)\n` +
-            `• \`.a add @User\` (or \`.v permit @User\`) - Allow a specific user to join\n` +
+            `• \`.a add @User\` (or \`.a permit @User\`) - Allow a specific user to join\n` +
             `• \`.a reject @User\` - Block and kick a user from your room\n` +
             `• \`.a claim\` - Reclaim ownership if the bot restarts`
           );
@@ -252,7 +252,7 @@ client.on('messageCreate', async (message) => {
       await message.channel.sendTyping();
 
       const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.8-flash',
         systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
 Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
 Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
@@ -326,7 +326,7 @@ Keep your answers concise, as Discord has a character limit.`
     return;
   }
 
-  // C. VOICE ROOM CONTROL COMMANDS: .v ...
+  // C. VOICE ROOM CONTROL COMMANDS: .a ... (Changed from .v)
   if (!message.content.startsWith('.a')) return;
   const args = message.content.slice(2).trim().split(/ +/);
   const command = args.shift().toLowerCase();
@@ -344,7 +344,7 @@ Keep your answers concise, as Discord has a character limit.`
       roomOwners.set(voiceChannel.id, message.author.id);
       await voiceChannel.permissionOverwrites.edit(message.author.id, { ManageChannels: true, Connect: true, Speak: true, SendMessages: true, ReadMessageHistory: true });
       await sendLog(message.guild, `🔑 **Room Claimed:** <@${message.author.id}> reclaimed ownership of \`${voiceChannel.name}\`.`);
-      return message.reply('✅ You have successfully reclaimed ownership of this room! You can use `.v` commands again.');
+      return message.reply('✅ You have successfully reclaimed ownership of this room! You can use `.a` commands again.');
     } catch (err) {
       return message.reply('❌ An error occurred while trying to claim the room.');
     }
@@ -353,7 +353,7 @@ Keep your answers concise, as Discord has a character limit.`
   // Verify ownership for other commands
   const ownerId = roomOwners.get(voiceChannel.id);
   if (!ownerId || ownerId !== message.author.id) {
-    return message.reply('❌ You can only manage a custom voice channel that you created! *(If the bot restarted, use `.v claim` first)*');
+    return message.reply('❌ You can only manage a custom voice channel that you created! *(If the bot restarted, use `.a claim` first)*');
   }
 
   try {
