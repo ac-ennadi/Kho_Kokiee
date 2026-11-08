@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField, AuditLogEvent } = require('discord.js');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const client = new Client({
   intents: [
@@ -25,6 +26,13 @@ const CREATE_VC_ID = process.env.CREATE_VC_ID;
 const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null; 
 
+// AI Setup
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+let genAI;
+if (GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+}
+
 // In-memory tracker to remember who owns which custom voice channel { channelId: userId }
 const roomOwners = new Map();
 
@@ -43,6 +51,7 @@ async function sendLog(guild, messageText) {
 
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
+  if (!GEMINI_API_KEY) console.log("⚠️ GEMINI_API_KEY is missing. The .ask command will be disabled.");
 });
 
 // 1. Assign role when a new member joins the server
@@ -229,6 +238,47 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 // 4. Handle Messages & Commands
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
+
+  // AI INTEGRATION WITH PERSONA: .ask command
+  if (message.content.startsWith('.ask ')) {
+    if (!genAI) {
+      return message.reply('❌ AI is not configured. The owner needs to set `GEMINI_API_KEY`.');
+    }
+
+    const promptText = message.content.slice(5).trim();
+    if (!promptText) return message.reply('❌ Please provide a question. Example: `.ask How do I get verified?`');
+
+    try {
+      await message.channel.sendTyping();
+
+      // Configure the model with a System Instruction to define its identity
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-1.5-flash',
+        systemInstruction: `You are a helpful, polite, and intelligent staff bot member of this Discord server. 
+Your goal is to assist members, answer their questions clearly, and guide them if they need help. 
+Always be friendly and professional. Use Discord markdown formatting like bolding or bullet points when useful. 
+Keep your answers concise, as Discord has a character limit.`
+      });
+
+      // Pass the user's name in the prompt so the bot knows who is talking to it!
+      const fullPrompt = `The user talking to you is named ${message.member.displayName}. They are asking: ${promptText}`;
+
+      const result = await model.generateContent(fullPrompt);
+      let responseText = result.response.text();
+
+      // Ensure the message fits within Discord's 2000 character limit
+      if (responseText.length > 2000) {
+        responseText = responseText.substring(0, 1996) + '...';
+      }
+
+      await message.reply(responseText);
+      await sendLog(message.guild, `🤖 **AI Query:** <@${message.author.id}> asked the AI a question in <#${message.channel.id}>.`);
+    } catch (err) {
+      console.error(`AI API Error: ${err.message}`);
+      message.reply('❌ An error occurred while generating the AI response. Try again later.');
+    }
+    return;
+  }
 
   // A. AJI COMMAND: aji @user
   if (message.content.toLowerCase().startsWith('aji ')) {
