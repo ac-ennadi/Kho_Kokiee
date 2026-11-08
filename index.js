@@ -341,17 +341,17 @@ const discordTools = [
       },
       {
         name: 'mute_member',
-        description: 'Mutes a member (server mute in voice channel and server timeout for 5 minutes) when requested by authorized staff or moderators.',
+        description: 'Mutes a member\'s microphone in their voice channel (Voice Mute only. Does NOT kick, does NOT timeout, does NOT remove roles, and does NOT lock channels).',
         parameters: {
           type: 'OBJECT',
           properties: {
             target_user: {
               type: 'STRING',
-              description: 'The username, display name, mention, or user ID of the person to mute',
+              description: 'The username, display name, mention, or user ID of the person to voice-mute',
             },
             reason: {
               type: 'STRING',
-              description: 'Optional reason for muting the user',
+              description: 'Optional reason for voice muting',
             },
           },
           required: ['target_user'],
@@ -586,6 +586,13 @@ async function executeDiscordTool(name, args, message) {
       return { success: false, error: `Role "${args.role_name}" not found in this server.` };
     }
 
+    if (ROLE_ID && role.id === ROLE_ID) {
+      return {
+        success: false,
+        error: "Cannot remove the main server membership role. Doing so would lock the user out of the server.",
+      };
+    }
+
     const check = checkRoleManagementPermissions(caller, role, message.guild);
     if (!check.allowed) return { success: false, error: check.error };
 
@@ -604,7 +611,7 @@ async function executeDiscordTool(name, args, message) {
     }
   }
 
-  // 3. MUTE MEMBER
+  // 3. MUTE MEMBER (Strictly Voice Mute - No timeouts, no kicks, no locked channels)
   if (name === 'mute_member') {
     if (!canCallerModerate(caller)) {
       return {
@@ -621,32 +628,26 @@ async function executeDiscordTool(name, args, message) {
       return { success: false, error: 'Cannot mute an Administrator.' };
     }
 
+    // Must be in a voice channel to voice-mute
+    if (!targetMember.voice.channel) {
+      return {
+        success: false,
+        error: `${targetMember.displayName} is not connected to any voice channel right now. Tell the caller in Moroccan Darija that the user must be in a voice channel to be muted.`,
+      };
+    }
+
     try {
-      const actionsDone = [];
-      if (targetMember.voice.channel) {
-        await targetMember.voice.setMute(true, args.reason || `Muted via AI by ${caller.displayName}`);
-        actionsDone.push('voice muted');
-      }
-
-      if (targetMember.moderatable) {
-        await targetMember.timeout(5 * 60 * 1000, args.reason || `Muted via AI by ${caller.displayName}`);
-        actionsDone.push('timed out for 5 minutes');
-      }
-
-      if (actionsDone.length === 0) {
-        await targetMember.voice.setMute(true, args.reason || `Muted via AI by ${caller.displayName}`);
-        actionsDone.push('voice muted');
-      }
-
-      await sendLog(message.guild, `🔇 **AI Mute:** <@${caller.id}> used AI to mute <@${targetMember.id}> (${actionsDone.join(', ')}).`);
+      // Pure voice mute: mutes mic without kicking, without timeout, and without touching server roles
+      await targetMember.voice.setMute(true, args.reason || `Voice muted via AI by ${caller.displayName}`);
+      await sendLog(message.guild, `🔇 **AI Voice Mute:** <@${caller.id}> muted <@${targetMember.id}> in \`${targetMember.voice.channel.name}\`.`);
       return {
         success: true,
         user: targetMember.displayName,
         mention: `<@${targetMember.id}>`,
-        action: actionsDone.join(' and '),
+        channel: targetMember.voice.channel.name,
       };
     } catch (err) {
-      return { success: false, error: `Failed to mute ${targetMember.displayName}: ${err.message}` };
+      return { success: false, error: `Failed to voice-mute ${targetMember.displayName}: ${err.message}` };
     }
   }
 
@@ -973,7 +974,7 @@ When a tool returns a result, summarize the action happily or explain any permis
         if (!responseText && toolResult.success) {
           if (call.name === 'give_role') responseText = `Safi a khay, 3tit role **${toolResult.role}** l ${toolResult.mention || toolResult.user} ✅`;
           else if (call.name === 'remove_role') responseText = `Safi 7eyedt role **${toolResult.role}** mn ${toolResult.mention || toolResult.user} ✅`;
-          else if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} 👍`;
+          else if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} f l-voice 👍`;
           else if (call.name === 'unmute_member') responseText = `Safi telqt ${toolResult.mention || toolResult.user} 👍`;
           else if (call.name === 'move_member') responseText = `Hani jbedt ${toolResult.mention || toolResult.user} l ${toolResult.channel} 😉`;
           else if (call.name === 'disconnect_member') responseText = `Safi kherrejt ${toolResult.mention || toolResult.user} mn l voice 🚪`;
