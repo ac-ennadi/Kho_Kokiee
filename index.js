@@ -304,6 +304,42 @@ const discordTools = [
   {
     functionDeclarations: [
       {
+        name: 'give_role',
+        description: 'Assigns/gives a Discord server role to a user. Used when an authorized staff/admin asks to give someone a role (e.g. "3tih role Member", "give @User role VIP", "3ti role l @User").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to receive the role',
+            },
+            role_name: {
+              type: 'STRING',
+              description: 'The name or mention of the role to assign (e.g. VIP, Member, Staff)',
+            },
+          },
+          required: ['target_user', 'role_name'],
+        },
+      },
+      {
+        name: 'remove_role',
+        description: 'Removes/takes away a Discord server role from a user (e.g. "7eyed role VIP mn @User", "remove role Member from @User").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to remove the role from',
+            },
+            role_name: {
+              type: 'STRING',
+              description: 'The name or mention of the role to remove',
+            },
+          },
+          required: ['target_user', 'role_name'],
+        },
+      },
+      {
         name: 'mute_member',
         description: 'Mutes a member (server mute in voice channel and server timeout for 5 minutes) when requested by authorized staff or moderators.',
         parameters: {
@@ -337,13 +373,63 @@ const discordTools = [
       },
       {
         name: 'move_member',
-        description: 'Pulls/moves a user from another voice channel into the caller current voice channel.',
+        description: 'Pulls/moves a user from their voice channel into the caller current voice channel or a specified channel.',
         parameters: {
           type: 'OBJECT',
           properties: {
             target_user: {
               type: 'STRING',
               description: 'The username, display name, mention, or user ID of the person to move',
+            },
+            destination: {
+              type: 'STRING',
+              description: 'Optional channel name or ID to move them to (defaults to caller voice channel)',
+            },
+          },
+          required: ['target_user'],
+        },
+      },
+      {
+        name: 'disconnect_member',
+        description: 'Kicks or disconnects a user from their current voice channel.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to disconnect',
+            },
+            reason: {
+              type: 'STRING',
+              description: 'Optional reason for disconnecting',
+            },
+          },
+          required: ['target_user'],
+        },
+      },
+      {
+        name: 'deafen_member',
+        description: 'Server-deafens a user in voice channel so they cannot hear anything.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to deafen',
+            },
+          },
+          required: ['target_user'],
+        },
+      },
+      {
+        name: 'undeafen_member',
+        description: 'Removes server deafen from a user in voice channel so they can hear again.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to undeafen',
             },
           },
           required: ['target_user'],
@@ -352,6 +438,62 @@ const discordTools = [
     ],
   },
 ];
+
+// Helper to find a role by name, mention, or ID
+function findRole(guild, roleQuery) {
+  if (!roleQuery) return null;
+  const clean = roleQuery.replace(/^[<@&>#\s]+/, '').trim().toLowerCase();
+
+  if (/^\d{17,20}$/.test(clean)) {
+    const role = guild.roles.cache.get(clean);
+    if (role) return role;
+  }
+
+  let matched = guild.roles.cache.find(r => r.name.toLowerCase() === clean);
+  if (matched) return matched;
+
+  matched = guild.roles.cache.find(r => r.name.toLowerCase().includes(clean));
+  return matched || null;
+}
+
+// Strict role verification check for managing roles
+function checkRoleManagementPermissions(caller, role, guild) {
+  const isOwner = guild.ownerId === caller.id;
+  const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+  const canManageRoles = caller.permissions.has(PermissionsBitField.Flags.ManageRoles);
+  const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+  if (!isOwner && !isAdmin && !canManageRoles && !hasStaffRole) {
+    return {
+      allowed: false,
+      error: `Permission denied: ${caller.displayName} does not have permission to manage roles. Only staff and administrators can give or remove roles.`,
+    };
+  }
+
+  const botMember = guild.members.me;
+  if (role.position >= botMember.roles.highest.position) {
+    return {
+      allowed: false,
+      error: `Cannot manage the "${role.name}" role because it is higher than or equal to my bot role in server hierarchy. Move my bot role higher in Server Settings.`,
+    };
+  }
+
+  if (!isOwner && role.position >= caller.roles.highest.position) {
+    return {
+      allowed: false,
+      error: `Permission denied: You cannot manage the "${role.name}" role because its position is equal to or higher than your own highest role.`,
+    };
+  }
+
+  if (role.managed) {
+    return {
+      allowed: false,
+      error: `Cannot manage "${role.name}" because it is automatically managed by an integration or Discord bot.`,
+    };
+  }
+
+  return { allowed: true };
+}
 
 // Helper to find a member in guild by mention, ID, or name
 async function findTargetMember(guild, query, mentions, botId) {
@@ -400,7 +542,7 @@ function canCallerMove(caller) {
   return hasMoveRole || hasStaffRole || isAdmin || canMove;
 }
 
-// Tool executor function
+// Tool executor function with strict role verification
 async function executeDiscordTool(name, args, message) {
   const caller = message.member;
   const targetMember = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id);
@@ -412,6 +554,57 @@ async function executeDiscordTool(name, args, message) {
     };
   }
 
+  // 1. GIVE ROLE
+  if (name === 'give_role') {
+    const role = findRole(message.guild, args.role_name);
+    if (!role) {
+      return { success: false, error: `Role "${args.role_name}" not found in this server.` };
+    }
+
+    const check = checkRoleManagementPermissions(caller, role, message.guild);
+    if (!check.allowed) return { success: false, error: check.error };
+
+    try {
+      await targetMember.roles.add(role);
+      await sendLog(message.guild, `🛡️ **AI Role Grant:** <@${caller.id}> gave the role \`${role.name}\` to <@${targetMember.id}>.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+        role: role.name,
+        action: 'added role',
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to add role ${role.name}: ${err.message}` };
+    }
+  }
+
+  // 2. REMOVE ROLE
+  if (name === 'remove_role') {
+    const role = findRole(message.guild, args.role_name);
+    if (!role) {
+      return { success: false, error: `Role "${args.role_name}" not found in this server.` };
+    }
+
+    const check = checkRoleManagementPermissions(caller, role, message.guild);
+    if (!check.allowed) return { success: false, error: check.error };
+
+    try {
+      await targetMember.roles.remove(role);
+      await sendLog(message.guild, `🛡️ **AI Role Remove:** <@${caller.id}> removed the role \`${role.name}\` from <@${targetMember.id}>.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+        role: role.name,
+        action: 'removed role',
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to remove role ${role.name}: ${err.message}` };
+    }
+  }
+
+  // 3. MUTE MEMBER
   if (name === 'mute_member') {
     if (!canCallerModerate(caller)) {
       return {
@@ -457,6 +650,7 @@ async function executeDiscordTool(name, args, message) {
     }
   }
 
+  // 4. UNMUTE MEMBER
   if (name === 'unmute_member') {
     if (!canCallerModerate(caller)) {
       return {
@@ -484,19 +678,12 @@ async function executeDiscordTool(name, args, message) {
     }
   }
 
+  // 5. MOVE MEMBER
   if (name === 'move_member') {
     if (!canCallerMove(caller)) {
       return {
         success: false,
         error: `Permission denied: ${caller.displayName} does not have permission to move members. Explain in Moroccan Darija that they need move permission.`,
-      };
-    }
-
-    const callerVoice = caller.voice.channel;
-    if (!callerVoice) {
-      return {
-        success: false,
-        error: `Caller ${caller.displayName} is not connected to any voice channel. Tell them in Darija that they must be in a voice channel first to pull someone.`,
       };
     }
 
@@ -508,17 +695,113 @@ async function executeDiscordTool(name, args, message) {
       };
     }
 
+    let destinationChannel = caller.voice.channel;
+    if (args.destination && args.destination.toLowerCase() !== 'me' && args.destination.toLowerCase() !== 'here') {
+      const cleanDest = args.destination.toLowerCase().replace(/^[#🔊\s]+/, '').trim();
+      const found = message.guild.channels.cache.find(
+        c => c.isVoiceBased() && (c.id === cleanDest || c.name.toLowerCase().includes(cleanDest))
+      );
+      if (found) destinationChannel = found;
+    }
+
+    if (!destinationChannel) {
+      return {
+        success: false,
+        error: `Caller ${caller.displayName} is not connected to any voice channel and no valid target channel was found.`,
+      };
+    }
+
     try {
-      await targetMember.voice.setChannel(callerVoice);
-      await sendLog(message.guild, `🧲 **AI Move:** <@${caller.id}> used AI to move <@${targetMember.id}> into \`${callerVoice.name}\`.`);
+      await targetMember.voice.setChannel(destinationChannel);
+      await sendLog(message.guild, `🧲 **AI Move:** <@${caller.id}> used AI to move <@${targetMember.id}> into \`${destinationChannel.name}\`.`);
       return {
         success: true,
         user: targetMember.displayName,
-        channel: callerVoice.name,
+        channel: destinationChannel.name,
         mention: `<@${targetMember.id}>`,
       };
     } catch (err) {
       return { success: false, error: `Failed to move: ${err.message}` };
+    }
+  }
+
+  // 6. DISCONNECT MEMBER FROM VOICE
+  if (name === 'disconnect_member') {
+    if (!canCallerMove(caller)) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have permission to disconnect members.`,
+      };
+    }
+
+    if (!targetMember.voice.channel) {
+      return { success: false, error: `${targetMember.displayName} is not connected to voice.` };
+    }
+
+    try {
+      await targetMember.voice.disconnect(args.reason || `Disconnected via AI by ${caller.displayName}`);
+      await sendLog(message.guild, `🚪 **AI Voice Kick:** <@${caller.id}> disconnected <@${targetMember.id}> from voice.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to disconnect: ${err.message}` };
+    }
+  }
+
+  // 7. DEAFEN MEMBER
+  if (name === 'deafen_member') {
+    const canDeaf = caller.permissions.has(PermissionsBitField.Flags.DeafenMembers);
+    if (!canCallerModerate(caller) && !canDeaf) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have permission to deafen members.`,
+      };
+    }
+
+    if (!targetMember.voice.channel) {
+      return { success: false, error: `${targetMember.displayName} is not connected to voice.` };
+    }
+
+    try {
+      await targetMember.voice.setDeaf(true, `Deafened via AI by ${caller.displayName}`);
+      await sendLog(message.guild, `🔇 **AI Deafen:** <@${caller.id}> deafened <@${targetMember.id}> in voice.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to deafen: ${err.message}` };
+    }
+  }
+
+  // 8. UNDEAFEN MEMBER
+  if (name === 'undeafen_member') {
+    const canDeaf = caller.permissions.has(PermissionsBitField.Flags.DeafenMembers);
+    if (!canCallerModerate(caller) && !canDeaf) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have permission to undeafen members.`,
+      };
+    }
+
+    if (!targetMember.voice.channel) {
+      return { success: false, error: `${targetMember.displayName} is not connected to voice.` };
+    }
+
+    try {
+      await targetMember.voice.setDeaf(false, `Undeafened via AI by ${caller.displayName}`);
+      await sendLog(message.guild, `🔊 **AI Undeafen:** <@${caller.id}> undeafened <@${targetMember.id}> in voice.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to undeafen: ${err.message}` };
     }
   }
 
@@ -638,9 +921,14 @@ You are in a Discord channel where multiple users converse with each other and w
 When recent channel history is provided in the prompt, use it to track who said what, remember names, understand context across multiple users, and address people by their names when relevant.
 
 You have Discord moderation tools:
-- mute_member: Call this tool if an authorized user asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user"). If they say "sketto" (mute him) without mentioning a name, identify who they are referring to from the recent conversation history!
+- give_role: Call this tool if someone asks to give/assign a role to someone (e.g. "3tih role Member", "give @User role VIP", "3ti role l @User").
+- remove_role: Call this tool if someone asks to remove/take away a role from someone (e.g. "7eyed role VIP mn @User", "remove role from @User").
+- mute_member: Call this tool if someone asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user").
 - unmute_member: Call this tool if someone asks to unmute a user (e.g. "telqo @user", "unmute @user", "tle9 l-user").
-- move_member: Call this tool if someone in voice asks to pull, move, or bring a user to their channel (e.g. "jib @user", "jbed @user", "aji @user", "move @user", "jib l3ndi @user"). If they refer to someone from the recent conversation, identify them!
+- move_member: Call this tool if someone asks to pull, move, or bring a user to voice (e.g. "jib @user", "jbed @user", "aji @user", "move @user l voice").
+- disconnect_member: Call this tool if someone asks to disconnect or kick someone from voice (e.g. "kherrej @user mn voice", "disconnect @user").
+- deafen_member: Call this tool if someone asks to deafen a user in voice (e.g. "sdem @user", "deafen @user").
+- undeafen_member: Call this tool if someone asks to undeafen a user in voice (e.g. "7eyed sdem l @user", "undeafen @user").
 
 For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
 When a tool returns a result, summarize the action happily or explain any permission issue politely in 1 short Moroccan Darija sentence.`,
@@ -683,9 +971,14 @@ When a tool returns a result, summarize the action happily or explain any permis
         }
 
         if (!responseText && toolResult.success) {
-          if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} 👍`;
+          if (call.name === 'give_role') responseText = `Safi a khay, 3tit role **${toolResult.role}** l ${toolResult.mention || toolResult.user} ✅`;
+          else if (call.name === 'remove_role') responseText = `Safi 7eyedt role **${toolResult.role}** mn ${toolResult.mention || toolResult.user} ✅`;
+          else if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} 👍`;
           else if (call.name === 'unmute_member') responseText = `Safi telqt ${toolResult.mention || toolResult.user} 👍`;
           else if (call.name === 'move_member') responseText = `Hani jbedt ${toolResult.mention || toolResult.user} l ${toolResult.channel} 😉`;
+          else if (call.name === 'disconnect_member') responseText = `Safi kherrejt ${toolResult.mention || toolResult.user} mn l voice 🚪`;
+          else if (call.name === 'deafen_member') responseText = `Safi sdemt ${toolResult.mention || toolResult.user} f voice 🔇`;
+          else if (call.name === 'undeafen_member') responseText = `Safi 7eyedt sdem l ${toolResult.mention || toolResult.user} 🔊`;
         } else if (!responseText && !toolResult.success) {
           responseText = `Ma qdertch ndir had l-action: ${toolResult.error}`;
         }
