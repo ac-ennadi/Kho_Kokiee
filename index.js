@@ -296,17 +296,260 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
+
+// ==========================================
+// AI MODERATION & VOICE TOOLS DEFINITION
+// ==========================================
+const discordTools = [
+  {
+    functionDeclarations: [
+      {
+        name: 'mute_member',
+        description: 'Mutes a member (server mute in voice channel and server timeout for 5 minutes) when requested by authorized staff or moderators.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to mute',
+            },
+            reason: {
+              type: 'STRING',
+              description: 'Optional reason for muting the user',
+            },
+          },
+          required: ['target_user'],
+        },
+      },
+      {
+        name: 'unmute_member',
+        description: 'Unmutes a member in voice channel and removes server timeout when requested by authorized staff.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to unmute',
+            },
+          },
+          required: ['target_user'],
+        },
+      },
+      {
+        name: 'move_member',
+        description: 'Pulls/moves a user from another voice channel into the caller current voice channel.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'The username, display name, mention, or user ID of the person to move',
+            },
+          },
+          required: ['target_user'],
+        },
+      },
+    ],
+  },
+];
+
+// Helper to find a member in guild by mention, ID, or name
+async function findTargetMember(guild, query, mentions, botId) {
+  if (mentions && mentions.members && mentions.members.size > 0) {
+    const target = mentions.members.find(m => m.id !== botId);
+    if (target) return target;
+  }
+
+  if (!query) return null;
+
+  const idMatch = query.match(/\d{17,20}/);
+  if (idMatch) {
+    try {
+      const byId = await guild.members.fetch(idMatch[0]);
+      if (byId) return byId;
+    } catch (e) {}
+  }
+
+  const cleanName = query.replace(/^[@🔊\s]+/, '').toLowerCase().trim();
+  if (!cleanName) return null;
+
+  try {
+    const searched = await guild.members.fetch({ query: cleanName, limit: 5 });
+    if (searched && searched.size > 0) {
+      return searched.first();
+    }
+  } catch (e) {}
+
+  return null;
+}
+
+// Permission checkers
+function canCallerModerate(caller) {
+  const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+  const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+  const canMute = caller.permissions.has(PermissionsBitField.Flags.MuteMembers);
+  const canModerate = caller.permissions.has(PermissionsBitField.Flags.ModerateMembers);
+  return hasStaffRole || isAdmin || canMute || canModerate;
+}
+
+function canCallerMove(caller) {
+  const hasMoveRole = MOVE_ROLE_ID && caller.roles.cache.has(MOVE_ROLE_ID);
+  const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+  const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+  const canMove = caller.permissions.has(PermissionsBitField.Flags.MoveMembers);
+  return hasMoveRole || hasStaffRole || isAdmin || canMove;
+}
+
+// Tool executor function
+async function executeDiscordTool(name, args, message) {
+  const caller = message.member;
+  const targetMember = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id);
+
+  if (!targetMember) {
+    return {
+      success: false,
+      error: `Could not find any user matching "${args.target_user}". Ask caller to mention them like @Username.`,
+    };
+  }
+
+  if (name === 'mute_member') {
+    if (!canCallerModerate(caller)) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have moderator or staff permissions to mute people. Explain in Moroccan Darija that only staff can mute.`,
+      };
+    }
+
+    if (targetMember.id === message.client.user.id) {
+      return { success: false, error: 'Cannot mute the bot.' };
+    }
+
+    if (targetMember.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return { success: false, error: 'Cannot mute an Administrator.' };
+    }
+
+    try {
+      const actionsDone = [];
+      if (targetMember.voice.channel) {
+        await targetMember.voice.setMute(true, args.reason || `Muted via AI by ${caller.displayName}`);
+        actionsDone.push('voice muted');
+      }
+
+      if (targetMember.moderatable) {
+        await targetMember.timeout(5 * 60 * 1000, args.reason || `Muted via AI by ${caller.displayName}`);
+        actionsDone.push('timed out for 5 minutes');
+      }
+
+      if (actionsDone.length === 0) {
+        await targetMember.voice.setMute(true, args.reason || `Muted via AI by ${caller.displayName}`);
+        actionsDone.push('voice muted');
+      }
+
+      await sendLog(message.guild, `🔇 **AI Mute:** <@${caller.id}> used AI to mute <@${targetMember.id}> (${actionsDone.join(', ')}).`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+        action: actionsDone.join(' and '),
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to mute ${targetMember.displayName}: ${err.message}` };
+    }
+  }
+
+  if (name === 'unmute_member') {
+    if (!canCallerModerate(caller)) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have permission to unmute.`,
+      };
+    }
+
+    try {
+      if (targetMember.voice.channel) {
+        await targetMember.voice.setMute(false, `Unmuted via AI by ${caller.displayName}`);
+      }
+      if (targetMember.isCommunicationDisabled()) {
+        await targetMember.timeout(null, `Unmuted via AI by ${caller.displayName}`);
+      }
+
+      await sendLog(message.guild, `🔊 **AI Unmute:** <@${caller.id}> used AI to unmute <@${targetMember.id}>.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        mention: `<@${targetMember.id}>`,
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to unmute: ${err.message}` };
+    }
+  }
+
+  if (name === 'move_member') {
+    if (!canCallerMove(caller)) {
+      return {
+        success: false,
+        error: `Permission denied: ${caller.displayName} does not have permission to move members. Explain in Moroccan Darija that they need move permission.`,
+      };
+    }
+
+    const callerVoice = caller.voice.channel;
+    if (!callerVoice) {
+      return {
+        success: false,
+        error: `Caller ${caller.displayName} is not connected to any voice channel. Tell them in Darija that they must be in a voice channel first to pull someone.`,
+      };
+    }
+
+    const targetVoice = targetMember.voice.channel;
+    if (!targetVoice) {
+      return {
+        success: false,
+        error: `${targetMember.displayName} is not in any voice channel right now.`,
+      };
+    }
+
+    try {
+      await targetMember.voice.setChannel(callerVoice);
+      await sendLog(message.guild, `🧲 **AI Move:** <@${caller.id}> used AI to move <@${targetMember.id}> into \`${callerVoice.name}\`.`);
+      return {
+        success: true,
+        user: targetMember.displayName,
+        channel: callerVoice.name,
+        mention: `<@${targetMember.id}>`,
+      };
+    } catch (err) {
+      return { success: false, error: `Failed to move: ${err.message}` };
+    }
+  }
+
+  return { success: false, error: `Unknown action: ${name}` };
+}
+
 // 4. Handle Messages & Commands
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  // AI replies when directly mentioned.
+  // AI replies when directly mentioned OR when someone replies to the bot's message
   const botMention = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
-  if (botMention && botMention.test(message.content)) {
+  const isMentioned = botMention ? botMention.test(message.content) : false;
+
+  let isReplyToBot = false;
+  let referencedMessage = null;
+
+  if (message.reference && message.reference.messageId) {
+    try {
+      referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+      if (referencedMessage && referencedMessage.author.id === client.user.id) {
+        isReplyToBot = true;
+      }
+    } catch (e) {}
+  }
+
+  if (isMentioned || isReplyToBot) {
     if (!genAI) return message.reply('Sme7 lia, AI mazal ma tf3elatch.');
 
-    const promptText = message.content.replace(botMention, '').trim();
-    if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al mn b3d ma tmentionini 🙂');
+    const promptText = (botMention ? message.content.replace(botMention, '') : message.content).trim();
+    if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al 🙂');
     if (promptText.length > AI_MAX_QUESTION_CHARS) {
       return message.reply(`Sou2al twil bzaf 😅 7awel tkhtasro l ${AI_MAX_QUESTION_CHARS} 7arf.`);
     }
@@ -316,6 +559,42 @@ client.on('messageCreate', async (message) => {
     if (now - lastRequest < AI_COOLDOWN_MS) return message.reply('3tini ghir chwia w nrje3 njawbek 🙂');
     aiUserCooldowns.set(message.author.id, now);
 
+    // Build context history from replied message chain
+    const chatHistory = [];
+    if (referencedMessage) {
+      try {
+        if (referencedMessage.reference && referencedMessage.reference.messageId) {
+          const originalUserMsg = await message.channel.messages.fetch(referencedMessage.reference.messageId).catch(() => null);
+          if (originalUserMsg && originalUserMsg.content) {
+            const cleanOriginal = botMention ? originalUserMsg.content.replace(botMention, '').trim() : originalUserMsg.content.trim();
+            if (cleanOriginal) {
+              chatHistory.push({
+                role: 'user',
+                parts: [{ text: `Question: ${cleanOriginal}` }],
+              });
+            }
+          }
+        }
+
+        if (referencedMessage.content) {
+          chatHistory.push({
+            role: 'model',
+            parts: [{ text: referencedMessage.content.trim() }],
+          });
+        }
+
+        // Gemini history must start with 'user'
+        if (chatHistory.length > 0 && chatHistory[0].role === 'model') {
+          chatHistory.unshift({
+            role: 'user',
+            parts: [{ text: 'Question: salam' }],
+          });
+        }
+      } catch (contextErr) {
+        console.warn(`[AI Context] Warning: ${contextErr.message}`);
+      }
+    }
+
     try {
       await message.channel.sendTyping();
       const modelName = await getAvailableGeminiModel();
@@ -323,11 +602,21 @@ client.on('messageCreate', async (message) => {
       
       const model = genAI.getGenerativeModel({
         model: modelName,
-        systemInstruction: `You are a friendly Discord community assistant. Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling, like "salam cv", "labas", and "chno" when natural. Never use Arabic script. Keep the wording relaxed, human, and conversational, like a Moroccan chatting with a friend. Avoid formal Arabic, stiff translations, and unnecessary English. Keep answers short, usually 1-3 sentences, without filler or repetitive introductions. Use Discord markdown only when useful. If you do not know something, say so simply. Be respectful and helpful.`
+        systemInstruction: `You are "kho Kokiee", a helpful, witty, and powerful Discord community assistant bot.
+Reply in casual Moroccan Darija written with Latin letters and familiar chat spelling (Arabizi like "salam cv", "labas", "chno", "sketto", "jbedto"). Never use Arabic script. Keep answers short, usually 1-2 sentences.
+
+You have Discord moderation tools:
+- mute_member: Call this tool if someone asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user").
+- unmute_member: Call this tool if someone asks to unmute a user (e.g. "telqo @user", "unmute @user", "tle9 l-user").
+- move_member: Call this tool if someone in voice asks to pull, move, or bring a user to their channel (e.g. "jib @user", "jbed @user", "aji @user", "move @user", "jib l3ndi @user").
+
+For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
+When a tool returns a result, summarize the action happily or explain any permission issue politely in 1 short Moroccan Darija sentence.`,
+        tools: discordTools,
       });
 
-      const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: `Question: ${promptText}` }] }],
+      const chat = model.startChat({
+        history: chatHistory.length > 0 ? chatHistory : undefined,
         generationConfig: {
           maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
           temperature: 0.7,
@@ -335,20 +624,54 @@ client.on('messageCreate', async (message) => {
         },
       });
 
+      let result = await chat.sendMessage(`Question: ${promptText}`);
       let responseText = '';
-      try {
-        responseText = result.response.text()?.trim();
-      } catch (textErr) {
-        console.warn(`[AI] response.text() warning: ${textErr.message}`);
-      }
 
-      if (!responseText) {
-        const parts = result.response?.candidates?.[0]?.content?.parts || [];
-        const nonThought = parts.filter(p => !p.thought && p.text);
-        if (nonThought.length > 0) {
-          responseText = nonThought.map(p => p.text).join('\n').trim();
-        } else {
-          responseText = parts.map(p => p.text).filter(Boolean).join('\n').trim();
+      const functionCalls = result.response.functionCalls();
+      if (functionCalls && functionCalls.length > 0) {
+        const call = functionCalls[0];
+        console.log(`[AI Tool] Model requested ${call.name} with args:`, call.args);
+
+        const toolResult = await executeDiscordTool(call.name, call.args, message);
+        console.log(`[AI Tool] Execution result:`, toolResult);
+
+        const followUp = await chat.sendMessage([
+          {
+            functionResponse: {
+              name: call.name,
+              response: toolResult,
+            },
+          },
+        ]);
+
+        try {
+          responseText = followUp.response.text()?.trim();
+        } catch (e) {
+          console.warn(`[AI] followUp text() warning: ${e.message}`);
+        }
+
+        if (!responseText && toolResult.success) {
+          if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} 👍`;
+          else if (call.name === 'unmute_member') responseText = `Safi telqt ${toolResult.mention || toolResult.user} 👍`;
+          else if (call.name === 'move_member') responseText = `Hani jbedt ${toolResult.mention || toolResult.user} l ${toolResult.channel} 😉`;
+        } else if (!responseText && !toolResult.success) {
+          responseText = `Ma qdertch ndir had l-action: ${toolResult.error}`;
+        }
+      } else {
+        try {
+          responseText = result.response.text()?.trim();
+        } catch (textErr) {
+          console.warn(`[AI] response.text() warning: ${textErr.message}`);
+        }
+
+        if (!responseText) {
+          const parts = result.response?.candidates?.[0]?.content?.parts || [];
+          const nonThought = parts.filter(p => !p.thought && p.text);
+          if (nonThought.length > 0) {
+            responseText = nonThought.map(p => p.text).join('\n').trim();
+          } else {
+            responseText = parts.map(p => p.text).filter(Boolean).join('\n').trim();
+          }
         }
       }
 
