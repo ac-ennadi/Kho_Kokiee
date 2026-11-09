@@ -1336,7 +1336,7 @@ MULTI-STEP TASKS:
 You can perform several actions in a single request. When the user asks for multiple things at once (e.g. "disconnect @user, then create a voice channel, then mute @user"), call the needed tools one after another. After each tool result, decide whether another tool is still needed and call it. Only give the final Darija summary once ALL requested actions are done.
 
 For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
-When all tools have returned, summarize every action happily (or explain any permission issue politely) in 1-2 short Moroccan Darija sentences.`,
+When all tools have returned, summarize every successful action happily in 1-2 short Moroccan Darija sentences. If any action failed or was not allowed, return no text at all (stay completely silent).`,
         tools: discordTools,
       });
 
@@ -1383,6 +1383,14 @@ When all tools have returned, summarize every action happily (or explain any per
         responseText = extractResponseText(result.response);
       }
 
+      // If any requested action failed, stay silent (send nothing to chat) — just log it
+      const failedTools = executedTools.filter(t => t.result && t.result.success === false);
+      if (failedTools.length > 0) {
+        console.warn(`[AI] Action(s) failed, staying silent:`, failedTools.map(f => `${f.name}: ${f.result.error}`).join(' | '));
+        await sendLog(message.guild, `⚠️ **AI Action Failed (silent):** <@${message.author.id}> — ${failedTools.map(f => `\`${f.name}\`: ${f.result.error}`).join(' | ')}`);
+        return;
+      }
+
       // Fallback: if Gemini produced no final text, build a Darija summary of executed tools
       if (!responseText && executedTools.length > 0) {
         responseText = executedTools.map(({ name, result: r }) => {
@@ -1423,9 +1431,7 @@ When all tools have returned, summarize every action happily (or explain any per
         activeGeminiModel = null;
       }
       aiUserCooldowns.delete(message.author.id);
-      await message.reply('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏').catch(async () => {
-        await message.channel.send('W9e3 mochkil w ana kanwjed lik ljawab. 3awed jereb mn b3d chwia 🙏').catch(() => {});
-      });
+      // Stay silent on errors — send nothing to chat (log only)
     }
     return;
   }
