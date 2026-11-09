@@ -253,13 +253,19 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const isCustomRoom = roomOwners.has(channel.id) || channel.name.startsWith('🔊 ') || channel.name.includes("'s Room");
 
     if ((isVerifyChannel || isCustomRoom) && channel.members.size === 0) {
+      const botMember = channel.guild.members.me;
+      const perms = channel.permissionsFor(botMember);
+      const canManage = perms ? perms.has(PermissionsBitField.Flags.ManageChannels) : false;
+      const canView = perms ? perms.has(PermissionsBitField.Flags.ViewChannel) : false;
+      console.log(`[Cleanup] Deleting empty room "${channel.name}" (members=0, bot ManageChannels=${canManage}, ViewChannel=${canView})`);
+
       try {
         roomOwners.delete(channel.id);
         await channel.delete();
         await sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${channel.name}\`.`);
       } catch (err) {
-        console.error(`[Cleanup] Failed to delete empty room "${channel.name}": ${err.message}`);
-        await sendLog(channel.guild, `⚠️ **Cleanup Failed:** Could not delete \`${channel.name}\` — ${err.message}. Check my "Manage Channels" permission.`).catch(() => {});
+        console.error(`[Cleanup] Failed to delete "${channel.name}" (ManageChannels=${canManage}, ViewChannel=${canView}): ${err.message}`);
+        await sendLog(channel.guild, `⚠️ **Cleanup Failed:** \`${channel.name}\` — ${err.message} (bot has ManageChannels: ${canManage}).`).catch(() => {});
         // Retry once shortly after (handles rare races / permission propagation)
         setTimeout(async () => {
           try {
