@@ -101,6 +101,59 @@ async function sendLog(guild, messageText) {
   }
 }
 
+// Start a verification session: private channel + ping staff + talk to the member
+async function startVerification(guild, member) {
+  if (!STAFF_ROLE_ID) {
+    return { success: false, error: 'STAFF_ROLE_ID is not configured, so the bot cannot ping staff for verification.' };
+  }
+  try {
+    const overwrites = [
+      { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+      { id: member.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak] },
+    ];
+
+    const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
+    if (staffRole) {
+      overwrites.push({
+        id: staffRole.id,
+        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+      });
+    }
+
+    const newChannel = await guild.channels.create({
+      name: `verify-${member.displayName}`,
+      type: ChannelType.GuildVoice,
+      parent: (CATEGORY_ID && CATEGORY_ID.length > 5) ? CATEGORY_ID : null,
+      permissionOverwrites: overwrites,
+    });
+
+    // Move the member in if they are already connected
+    if (member.voice && member.voice.channelId) {
+      await member.voice.setChannel(newChannel).catch(() => {});
+    }
+
+    // The bot talks to the person who wants to verify
+    try {
+      await newChannel.send(`👋 Salam <@${member.id}>! Daba ghadi yjiw staff bach yverify-iwk. Stenna chwia hna 🙂`);
+    } catch (e) {}
+
+    // Ping staff to come verify
+    try {
+      await newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session for **${member.displayName}**. Please come verify them here!`);
+    } catch (e) {}
+
+    // Also DM the person as a heads-up
+    try {
+      await member.send(`👋 Salam ${member.displayName}! 3ayetna l staff bach yverify-iwk. Dkhol l <#${newChannel.id}> daba 🙂`);
+    } catch (e) {}
+
+    await sendLog(guild, `🛡️ **Verification Session:** <@${member.id}> started a verification session in \`${newChannel.name}\`.`);
+    return { success: true, user: member.displayName, mention: `<@${member.id}>`, channel: newChannel.name };
+  } catch (err) {
+    return { success: false, error: `Failed to start verification: ${err.message}` };
+  }
+}
+
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
   if (!GEMINI_API_KEY) {
@@ -254,45 +307,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 
   // E. VERIFICATION WORKFLOW
-  if (newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
+  if (TARGET_VC_ID && newState.channelId === TARGET_VC_ID && oldState.channelId !== TARGET_VC_ID) {
     const member = newState.member;
-    if (!member.roles.cache.has(NOT_VERIFIED_ROLE_ID)) return;
-
-    try {
-      const guild = newState.guild;
-      const overwrites = [
-        { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-        { id: member.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak] },
-      ];
-
-      if (STAFF_ROLE_ID) {
-        const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
-        if (staffRole) {
-          overwrites.push({
-            id: staffRole.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
-          });
-        }
-      }
-
-      const newChannel = await guild.channels.create({
-        name: `verify-${member.displayName}`,
-        type: ChannelType.GuildVoice,
-        parent: (CATEGORY_ID && CATEGORY_ID.length > 5) ? CATEGORY_ID : null,
-        permissionOverwrites: overwrites,
-      });
-
-      await member.voice.setChannel(newChannel);
-      await sendLog(guild, `🛡️ **Verification Session:** <@${member.id}> started a verification session in \`${newChannel.name}\`.`);
-
-      if (STAFF_ROLE_ID) {
-        setTimeout(async () => {
-          try {
-            await newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session started for **${member.displayName}**. Please assist them here!`);
-          } catch (err) {}
-        }, 1000);
-      }
-    } catch (error) {}
+    if (NOT_VERIFIED_ROLE_ID && !member.roles.cache.has(NOT_VERIFIED_ROLE_ID)) return;
+    await startVerification(newState.guild, member);
   }
 });
 
@@ -493,6 +511,56 @@ const discordTools = [
           required: ['destination_channel'],
         },
       },
+      {
+        name: 'move_members',
+        description: 'Moves several specific members into a voice channel (e.g. "jbed @A w @B l hna", "move @A and @B to my channel", "jib @A, @B l voice").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_users: {
+              type: 'STRING',
+              description: 'Comma-separated list of usernames, mentions, or user IDs to move',
+            },
+            destination: {
+              type: 'STRING',
+              description: 'Optional channel name or ID to move them to (defaults to the caller voice channel)',
+            },
+          },
+          required: ['target_users'],
+        },
+      },
+      {
+        name: 'dm_members',
+        description: 'Sends a private direct message (DM) to one or multiple members (e.g. "sift l @User f privé: salam", "dm @A and @B the rules").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_users: {
+              type: 'STRING',
+              description: 'Comma-separated list of usernames, mentions, or user IDs to message',
+            },
+            message_text: {
+              type: 'STRING',
+              description: 'The private message text to send',
+            },
+          },
+          required: ['target_users', 'message_text'],
+        },
+      },
+      {
+        name: 'start_verification',
+        description: 'Starts a verification session: creates a private verify channel, tags staff to come verify, and talks to the person (e.g. "bghit nverify", "call staff to verify me", "3ayet l staff yverify-iw @User").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            target_user: {
+              type: 'STRING',
+              description: 'Optional username, mention, or user ID of the person to verify (defaults to the caller)',
+            },
+          },
+          required: [],
+        },
+      },
     ],
   },
 ];
@@ -546,6 +614,27 @@ function findChannel(guild, query, type) {
 // Helper to find a voice channel by name or ID
 function findVoiceChannel(guild, query) {
   return findChannel(guild, query, 'voice');
+}
+
+// Resolve one or multiple members from mentions + a comma-separated string (deduped)
+async function resolveMembers(guild, targetUsers, mentions, botId) {
+  const found = new Map();
+
+  if (mentions && mentions.members && mentions.members.size > 0) {
+    for (const m of mentions.members.values()) {
+      if (m.id !== botId) found.set(m.id, m);
+    }
+  }
+
+  if (targetUsers) {
+    const parts = String(targetUsers).split(/[,\u060C\n]+/).map(s => s.trim()).filter(Boolean);
+    for (const part of parts) {
+      const m = await findTargetMember(guild, part, null, botId);
+      if (m) found.set(m.id, m);
+    }
+  }
+
+  return Array.from(found.values());
 }
 
 // Extract the plain text from a Gemini response (skips "thought" parts on thinking models)
@@ -652,7 +741,7 @@ async function executeDiscordTool(name, args, message) {
   const caller = message.member;
 
   // Tools that don't operate on a single target user (no target_user lookup needed)
-  const noTargetTools = ['create_channel', 'create_role', 'move_all_members'];
+  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification'];
 
   let targetMember = null;
   if (!noTargetTools.includes(name)) {
@@ -1023,6 +1112,95 @@ async function executeDiscordTool(name, args, message) {
     return { success: true, moved, source: source.name, dest: destination.name, errors };
   }
 
+  // 12. MOVE MULTIPLE SPECIFIC MEMBERS
+  if (name === 'move_members') {
+    if (!canCallerMove(caller)) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to move members. Explain in Moroccan Darija that they need move permission.` };
+    }
+
+    const members = await resolveMembers(message.guild, args.target_users, message.mentions, message.client.user.id);
+    if (members.length === 0) {
+      return { success: false, error: 'Could not find any of the mentioned users to move. Ask the caller to mention them like @Username.' };
+    }
+
+    let destination = caller.voice.channel;
+    if (args.destination && !['here', 'me', 'my channel', 'my voice', 'hna'].includes(args.destination.toLowerCase().trim())) {
+      const found = findVoiceChannel(message.guild, args.destination);
+      if (found) destination = found;
+    }
+
+    if (!destination) return { success: false, error: 'No destination voice channel found and the caller is not connected to a voice channel.' };
+
+    let moved = 0;
+    const errors = [];
+    for (const m of members) {
+      try {
+        await m.voice.setChannel(destination);
+        moved++;
+      } catch (e) {
+        errors.push(`${m.displayName}: ${e.message}`);
+      }
+    }
+
+    await sendLog(message.guild, `🧲 **AI Bulk Move (selected):** <@${caller.id}> moved ${moved} member(s) into \`${destination.name}\`.`);
+    return { success: true, moved, dest: destination.name, errors };
+  }
+
+  // 13. SEND PRIVATE MESSAGES TO ONE OR MULTIPLE MEMBERS
+  if (name === 'dm_members') {
+    const isOwner = message.guild.ownerId === caller.id;
+    const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+    const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+    if (!isOwner && !isAdmin && !hasStaffRole) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to send private messages. Explain in Moroccan Darija that only staff/admins can do this.` };
+    }
+
+    const messageText = (args.message_text || '').trim();
+    if (!messageText) return { success: false, error: 'A private message text is required.' };
+
+    const members = await resolveMembers(message.guild, args.target_users, message.mentions, message.client.user.id);
+    if (members.length === 0) {
+      return { success: false, error: 'Could not find any of the mentioned users to message. Ask the caller to mention them like @Username.' };
+    }
+
+    let sent = 0;
+    const errors = [];
+    for (const m of members) {
+      try {
+        await m.send(messageText);
+        sent++;
+      } catch (e) {
+        errors.push(`${m.displayName}: ${e.message}`);
+      }
+    }
+
+    await sendLog(message.guild, `📩 **AI DM:** <@${caller.id}> sent a private message to ${sent} member(s).`);
+    return { success: true, sent, errors };
+  }
+
+  // 14. START VERIFICATION (tag staff + talk to the person)
+  if (name === 'start_verification') {
+    let target = caller;
+
+    if (args.target_user && args.target_user.trim()) {
+      const isOwner = message.guild.ownerId === caller.id;
+      const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+      const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+      if (!isOwner && !isAdmin && !hasStaffRole) {
+        return { success: false, error: 'You can only start verification for yourself. Ask a staff member to verify someone else.' };
+      }
+
+      target = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id);
+      if (!target) {
+        return { success: false, error: `Could not find user matching "${args.target_user}".` };
+      }
+    }
+
+    return await startVerification(message.guild, target);
+  }
+
   return { success: false, error: `Unknown action: ${name}` };
 }
 
@@ -1150,6 +1328,9 @@ You have Discord moderation tools:
 - create_channel: Call this tool if someone asks to create a channel (e.g. "dir channel smito General", "create a voice channel named Gaming", "sawb channel voice").
 - create_role: Call this tool if someone asks to create a role (e.g. "dir role smito VIP", "create role Member", "sawb role Admin").
 - move_all_members: Call this tool if someone asks to move EVERYONE in a voice channel to another channel (e.g. "7rekk ga3 li f channel X l channel Y", "move everyone to my channel", "jib ga3 li f l-voice l hna").
+- move_members: Call this tool if someone asks to move several specific people to a voice channel (e.g. "jbed @A w @B l hna", "move @A and @B to my channel", "jib @A, @B l voice").
+- dm_members: Call this tool if someone asks to send a private message to one or more people (e.g. "sift l @User f privé: salam", "dm @A and @B the rules").
+- start_verification: Call this tool if someone asks to verify, or asks to call/tag staff to verify them (e.g. "bghit nverify", "3ayet l staff yverify-iw", "call staff to verify me").
 
 MULTI-STEP TASKS:
 You can perform several actions in a single request. When the user asks for multiple things at once (e.g. "disconnect @user, then create a voice channel, then mute @user"), call the needed tools one after another. After each tool result, decide whether another tool is still needed and call it. Only give the final Darija summary once ALL requested actions are done.
@@ -1218,6 +1399,9 @@ When all tools have returned, summarize every action happily (or explain any per
             case 'move_all_members': return `Safi 7rekkt **${r.moved}** members mn \`${r.source}\` l \`${r.dest}\` 🧲`;
             case 'create_channel': return `Safi creatit ${r.type === 'voice' ? 'voice' : 'text'} channel ${r.mention || r.name} ✅`;
             case 'create_role': return `Safi creatit role ${r.mention || r.name} ✅`;
+            case 'move_members': return `Safi jbedt **${r.moved}** members l \`${r.dest}\` 🧲`;
+            case 'dm_members': return `Safi sift message f privé l **${r.sent}** members 📩`;
+            case 'start_verification': return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
             default: return `Safi t-dar l-action **${name}** ✅`;
           }
         }).join('\n');
