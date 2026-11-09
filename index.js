@@ -110,6 +110,10 @@ async function startVerification(guild, member) {
     const overwrites = [
       { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
       { id: member.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak] },
+      {
+        id: client.user.id,
+        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels],
+      },
     ];
 
     const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
@@ -246,14 +250,29 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (oldState.channel) {
     const channel = oldState.channel;
     const isVerifyChannel = channel.name.startsWith('verify-');
-    const isCustomRoom = roomOwners.has(channel.id) || channel.name.includes("'s Room");
+    const isCustomRoom = roomOwners.has(channel.id) || channel.name.startsWith('🔊 ') || channel.name.includes("'s Room");
 
     if ((isVerifyChannel || isCustomRoom) && channel.members.size === 0) {
       try {
         roomOwners.delete(channel.id);
         await channel.delete();
         await sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${channel.name}\`.`);
-      } catch (err) {}
+      } catch (err) {
+        console.error(`[Cleanup] Failed to delete empty room "${channel.name}": ${err.message}`);
+        await sendLog(channel.guild, `⚠️ **Cleanup Failed:** Could not delete \`${channel.name}\` — ${err.message}. Check my "Manage Channels" permission.`).catch(() => {});
+        // Retry once shortly after (handles rare races / permission propagation)
+        setTimeout(async () => {
+          try {
+            const ch = channel.guild.channels.cache.get(channel.id);
+            if (ch && ch.members.size === 0) {
+              await ch.delete();
+              await sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${ch.name}\`.`).catch(() => {});
+            }
+          } catch (e) {
+            console.error(`[Cleanup] Retry failed to delete "${channel.name}": ${e.message}`);
+          }
+        }, 1500);
+      }
     }
   }
 
