@@ -1,6 +1,16 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField, AuditLogEvent } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Music (optional): wrapped so the bot still runs if these libraries are missing
+let DisTube = null;
+let YtDlpPlugin = null;
+try {
+  ({ DisTube } = require('distube'));
+  ({ YtDlpPlugin } = require('@distube/yt-dlp'));
+} catch (e) {
+  console.warn(`[Music] Music libraries not installed, music commands disabled: ${e.message}`);
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -14,6 +24,39 @@ const client = new Client({
     activities: [{ name: 'for new members', type: ActivityType.Watching }],
   },
 });
+
+// Music playback setup (distube v5 + yt-dlp)
+const distube = (DisTube && YtDlpPlugin)
+  ? new DisTube(client, {
+      plugins: [new YtDlpPlugin({ update: true })],
+      emitNewSongOnly: true,
+    })
+  : null;
+
+if (distube) {
+  distube.on('playSong', (queue, song) => {
+    if (queue && queue.textChannel) {
+      queue.textChannel.send(`🎶 Daba kayn-playi: \`${song.name}\``).catch(() => {});
+    }
+  });
+
+  distube.on('addSong', (queue, song) => {
+    if (queue && queue.textChannel) {
+      queue.textChannel.send(`✅ Tzad l queue: \`${song.name}\``).catch(() => {});
+    }
+  });
+
+  distube.on('finish', (queue) => {
+    try { queue.voice.leave(); } catch (e) {}
+  });
+
+  distube.on('error', (error, queue) => {
+    console.error(`[Music] Error: ${error.message}`);
+    if (queue && queue.textChannel) {
+      queue.textChannel.send('❌ W9e3 error f l-music.').catch(() => {});
+    }
+  });
+}
 
 // Configuration IDs loaded securely from Railway Environment Variables
 const ROLE_ID = process.env.ROLE_ID;                    
@@ -1434,6 +1477,62 @@ When all tools have returned, summarize every successful action happily in 1-2 s
       // Stay silent on errors — send nothing to chat (log only)
     }
     return;
+  }
+  // MUSIC COMMANDS: m!p <song>, m!s, m!stop, m!leave
+  if (message.content.toLowerCase().startsWith('m!')) {
+    if (!distube) return message.reply('❌ Music ma kaynch (dependencies ma installerch).');
+
+    const musicParts = message.content.slice(2).trim().split(/ +/);
+    const musicCmd = (musicParts.shift() || '').toLowerCase();
+    const musicQuery = musicParts.join(' ');
+
+    if (musicCmd === 'leave') {
+      try {
+        const q = distube.getQueue(message.guild);
+        if (q) q.stop();
+        await distube.voices.leave(message.guild);
+      } catch (e) {}
+      return message.reply('👋 Safi nkherrejt mn l voice.');
+    }
+
+    if (musicCmd === 'stop') {
+      const q = distube.getQueue(message.guild);
+      if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+      q.stop();
+      return message.reply('⏹️ W9eft l-music w 7eyedt l queue.');
+    }
+
+    if (!message.member.voice.channel) {
+      return message.reply('❌ Khassek tkon f voice channel bach tsta3mel had command.');
+    }
+
+    if (musicCmd === 's' || musicCmd === 'skip') {
+      const q = distube.getQueue(message.guild);
+      if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+      try {
+        const song = await q.skip();
+        return message.reply(`⏭️ Skipped \`${song && song.name ? song.name : 'song'}\`.`);
+      } catch (e) {
+        return message.reply('❌ Ma qdertch nskipi.');
+      }
+    }
+
+    if (musicCmd === 'p' || musicCmd === 'play') {
+      if (!musicQuery) return message.reply('❌ Kteb chi song, mithal: `m!p <song name / link>`');
+      try {
+        await distube.play(message.member.voice.channel, musicQuery, {
+          member: message.member,
+          textChannel: message.channel,
+          message,
+        });
+        return message.reply('🔎 3amr l talab...');
+      } catch (e) {
+        console.error(`[Music] play error: ${e.message}`);
+        return message.reply('❌ Ma qdertch nplayi had l-7aja. Jarreb link akhor.');
+      }
+    }
+
+    return message.reply('❓ Commands: `m!p <song>`, `m!s`, `m!stop`, `m!leave`');
   }
   // A. AJI COMMAND: aji @user
   if (message.content.toLowerCase().startsWith('aji ')) {
