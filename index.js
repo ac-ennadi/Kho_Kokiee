@@ -643,8 +643,22 @@ const discordTools = [
         },
       },
       {
+        name: 'join_voice',
+        description: 'Joins the caller voice channel (e.g. "join the vc", "dkhoul l voice", "aji l voice", "join the call").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            channel: {
+              type: 'STRING',
+              description: 'Optional voice channel name or ID to join (defaults to the caller current channel)',
+            },
+          },
+          required: [],
+        },
+      },
+      {
         name: 'play_music',
-        description: 'Plays a song in the caller voice channel (e.g. "play some chill music", "3zef chi song", "diro chi 7aja").',
+        description: 'Plays a song in the caller voice channel (e.g. "play the music", "play some chill music", "3zef chi song", "diro chi 7aja").',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -891,7 +905,7 @@ async function executeDiscordTool(name, args, message) {
   const caller = message.member;
 
   // Tools that don't operate on a single target user (no target_user lookup needed)
-  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
+  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
 
   let targetMember = null;
   if (!noTargetTools.includes(name)) {
@@ -1352,13 +1366,31 @@ async function executeDiscordTool(name, args, message) {
   }
 
   // 15. MUSIC CONTROL — kho Kokiee plays/controls music directly via distube
+  if (name === 'join_voice') {
+    if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
+    let channel = caller.voice.channel;
+    if (args.channel && !['here', 'me', 'my channel', 'my voice', 'hna'].includes(args.channel.toLowerCase().trim())) {
+      const found = findVoiceChannel(message.guild, args.channel);
+      if (found) channel = found;
+    }
+    if (!channel) return { success: false, error: 'You must be in a voice channel, or specify a channel name.' };
+    try {
+      await distube.voices.join(channel);
+      return { success: true, channel: channel.name };
+    } catch (e) {
+      return { success: false, error: `Failed to join: ${e.message}` };
+    }
+  }
+
   if (name === 'play_music') {
     const query = (args.query || '').trim();
     if (!query) return { success: false, error: 'A song query is required.' };
     if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
-    if (!caller.voice.channel) return { success: false, error: 'You must be in a voice channel to play music.' };
+    // Play in the caller's channel, or the bot's current channel if the caller isn't in one
+    const targetChannel = caller.voice.channel || message.guild.members.me.voice.channel;
+    if (!targetChannel) return { success: false, error: 'You must be in a voice channel (or I must be connected) to play music.' };
     try {
-      await distube.play(caller.voice.channel, query, { member: caller, textChannel: message.channel, message });
+      await distube.play(targetChannel, query, { member: caller, textChannel: message.channel, message });
       return { success: true, query };
     } catch (e) {
       return { success: false, error: `Failed to play: ${e.message}` };
@@ -1594,10 +1626,11 @@ You have Discord moderation tools:
 - move_members: Call this tool if someone asks to move several specific people to a voice channel (e.g. "jbed @A w @B l hna", "move @A and @B to my channel", "jib @A, @B l voice").
 - dm_members: Call this tool if someone asks to send a private message to one or more people (e.g. "sift l @User f privé: salam", "dm @A and @B the rules").
 - start_verification: Call this tool if someone asks to verify, or asks to call/tag staff to verify them (e.g. "bghit nverify", "3ayet l staff yverify-iw", "call staff to verify me").
-- play_music: Call this tool if someone asks to play a song/music (e.g. "play some chill music", "3zef chi song", "diro chi 7aja").
-- skip_music: Call this tool if someone asks to skip the song (e.g. "skip", "dozi l-li moraha").
+- join_voice: Call this tool if someone asks you to join a voice channel (e.g. "join the vc", "dkhoul l voice", "aji l voice", "join the call").
+- play_music: Call this tool if someone asks to play a song/music (e.g. "play the music", "play some chill music", "3zef chi song", "diro chi 7aja").
+- skip_music: Call this tool if someone asks to skip or change the song (e.g. "skip", "change it", "baddel l-ghnya", "dozi l-li moraha").
 - stop_music: Call this tool if someone asks to stop the music (e.g. "stop l-music", "w9ef l-music").
-- leave_music: Call this tool if someone asks you to leave the voice channel (e.g. "kherrej mn l voice", "leave voice").
+- leave_music: Call this tool if someone asks you to leave the voice channel (e.g. "leave", "kherrej mn l voice", "leave voice").
 - delete_channel: Call this tool if someone asks to delete a channel (e.g. "ms7 channel X", "delete channel #general", "7eyed channel smito Y").
 - delete_role: Call this tool if someone asks to delete a role (e.g. "ms7 role VIP", "delete role Member", "7eyed role smito X").
 
@@ -1679,6 +1712,7 @@ When all tools have returned, summarize every successful action happily in 1-2 s
             case 'move_members': return `Safi jbedt **${r.moved}** members l \`${r.dest}\` 🧲`;
             case 'dm_members': return `Safi sift message f privé l **${r.sent}** members 📩`;
             case 'start_verification': return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
+            case 'join_voice': return `Safi dkhalt l voice \`${r.channel}\` 🔊`;
             case 'play_music': return `Safi bda kayn-playi \`${r.query}\` 🎶`;
             case 'skip_music': return `Safi skipt l-ghnya ⏭️`;
             case 'stop_music': return `Safi w9eft l-music ⏹️`;
