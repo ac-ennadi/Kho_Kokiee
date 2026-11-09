@@ -1,6 +1,16 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField, AuditLogEvent } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Music (optional): wrapped so the bot still runs if these libraries are missing
+let DisTube = null;
+let YtDlpPlugin = null;
+try {
+  ({ DisTube } = require('distube'));
+  ({ YtDlpPlugin } = require('@distube/yt-dlp'));
+} catch (e) {
+  console.warn(`[Music] Music libraries not installed, music commands disabled: ${e.message}`);
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -14,6 +24,39 @@ const client = new Client({
     activities: [{ name: 'for new members', type: ActivityType.Watching }],
   },
 });
+
+// Music playback setup (distube v5 + yt-dlp)
+const distube = (DisTube && YtDlpPlugin)
+  ? new DisTube(client, {
+      plugins: [new YtDlpPlugin({ update: true })],
+      emitNewSongOnly: true,
+    })
+  : null;
+
+if (distube) {
+  distube.on('playSong', (queue, song) => {
+    if (queue && queue.textChannel) {
+      queue.textChannel.send(`🎶 Daba kayn-playi: \`${song.name}\``).catch(() => {});
+    }
+  });
+
+  distube.on('addSong', (queue, song) => {
+    if (queue && queue.textChannel) {
+      queue.textChannel.send(`✅ Tzad l queue: \`${song.name}\``).catch(() => {});
+    }
+  });
+
+  distube.on('finish', (queue) => {
+    try { queue.voice.leave(); } catch (e) {}
+  });
+
+  distube.on('error', (error, queue) => {
+    console.error(`[Music] Error: ${error.message}`);
+    if (queue && queue.textChannel) {
+      queue.textChannel.send('❌ W9e3 error f l-music.').catch(() => {});
+    }
+  });
+}
 
 // Configuration IDs loaded securely from Railway Environment Variables
 const ROLE_ID = process.env.ROLE_ID;                    
@@ -588,7 +631,7 @@ const discordTools = [
       },
       {
         name: 'play_music',
-        description: 'Asks the Jockie Music bot to play a song by typing the m!p command in chat (e.g. "play some chill music", "3zef chi song", "diro chi 7aja").',
+        description: 'Plays a song in the caller voice channel (e.g. "play some chill music", "3zef chi song", "diro chi 7aja").',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -602,7 +645,7 @@ const discordTools = [
       },
       {
         name: 'skip_music',
-        description: 'Asks the Jockie Music bot to skip the current song by typing m!s in chat.',
+        description: 'Skips the current song.',
         parameters: {
           type: 'OBJECT',
           properties: {},
@@ -611,7 +654,7 @@ const discordTools = [
       },
       {
         name: 'stop_music',
-        description: 'Asks the Jockie Music bot to stop the music by typing m!stop in chat.',
+        description: 'Stops the music and clears the queue.',
         parameters: {
           type: 'OBJECT',
           properties: {},
@@ -620,7 +663,7 @@ const discordTools = [
       },
       {
         name: 'leave_music',
-        description: 'Asks the Jockie Music bot to leave the voice channel by typing m!leave in chat.',
+        description: 'Stops the music and leaves the voice channel.',
         parameters: {
           type: 'OBJECT',
           properties: {},
@@ -1295,21 +1338,26 @@ async function executeDiscordTool(name, args, message) {
     return await startVerification(message.guild, target);
   }
 
-  // 15. MUSIC CONTROL — bot types Jockie Music commands (m!p, m!s, m!stop, m!leave) in chat
+  // 15. MUSIC CONTROL — kho Kokiee plays/controls music directly via distube
   if (name === 'play_music') {
     const query = (args.query || '').trim();
     if (!query) return { success: false, error: 'A song query is required.' };
+    if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
+    if (!caller.voice.channel) return { success: false, error: 'You must be in a voice channel to play music.' };
     try {
-      await message.channel.send(`m!p ${query}`);
+      await distube.play(caller.voice.channel, query, { member: caller, textChannel: message.channel, message });
       return { success: true, query };
     } catch (e) {
-      return { success: false, error: `Failed to send music command: ${e.message}` };
+      return { success: false, error: `Failed to play: ${e.message}` };
     }
   }
 
   if (name === 'skip_music') {
+    if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
     try {
-      await message.channel.send('m!s');
+      const q = distube.getQueue(message.guild);
+      if (!q) return { success: false, error: 'There is no music playing right now.' };
+      await q.skip();
       return { success: true };
     } catch (e) {
       return { success: false, error: `Failed to skip: ${e.message}` };
@@ -1317,8 +1365,11 @@ async function executeDiscordTool(name, args, message) {
   }
 
   if (name === 'stop_music') {
+    if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
     try {
-      await message.channel.send('m!stop');
+      const q = distube.getQueue(message.guild);
+      if (!q) return { success: false, error: 'There is no music playing right now.' };
+      q.stop();
       return { success: true };
     } catch (e) {
       return { success: false, error: `Failed to stop: ${e.message}` };
@@ -1326,8 +1377,11 @@ async function executeDiscordTool(name, args, message) {
   }
 
   if (name === 'leave_music') {
+    if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
     try {
-      await message.channel.send('m!leave');
+      const q = distube.getQueue(message.guild);
+      if (q) q.stop();
+      await distube.voices.leave(message.guild);
       return { success: true };
     } catch (e) {
       return { success: false, error: `Failed to leave: ${e.message}` };
@@ -1527,10 +1581,10 @@ You have Discord moderation tools:
 - move_members: Call this tool if someone asks to move several specific people to a voice channel (e.g. "jbed @A w @B l hna", "move @A and @B to my channel", "jib @A, @B l voice").
 - dm_members: Call this tool if someone asks to send a private message to one or more people (e.g. "sift l @User f privé: salam", "dm @A and @B the rules").
 - start_verification: Call this tool if someone asks to verify, or asks to call/tag staff to verify them (e.g. "bghit nverify", "3ayet l staff yverify-iw", "call staff to verify me").
-- play_music: Call this tool if someone asks to play a song/music (e.g. "play some chill music", "3zef chi song", "diro chi 7aja"). You type the Jockie Music command in chat.
+- play_music: Call this tool if someone asks to play a song/music (e.g. "play some chill music", "3zef chi song", "diro chi 7aja").
 - skip_music: Call this tool if someone asks to skip the song (e.g. "skip", "dozi l-li moraha").
 - stop_music: Call this tool if someone asks to stop the music (e.g. "stop l-music", "w9ef l-music").
-- leave_music: Call this tool if someone asks to make the music bot leave the voice channel (e.g. "kherrej Jockie", "leave voice").
+- leave_music: Call this tool if someone asks you to leave the voice channel (e.g. "kherrej mn l voice", "leave voice").
 - delete_channel: Call this tool if someone asks to delete a channel (e.g. "ms7 channel X", "delete channel #general", "7eyed channel smito Y").
 - delete_role: Call this tool if someone asks to delete a role (e.g. "ms7 role VIP", "delete role Member", "7eyed role smito X").
 
@@ -1612,10 +1666,10 @@ When all tools have returned, summarize every successful action happily in 1-2 s
             case 'move_members': return `Safi jbedt **${r.moved}** members l \`${r.dest}\` 🧲`;
             case 'dm_members': return `Safi sift message f privé l **${r.sent}** members 📩`;
             case 'start_verification': return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
-            case 'play_music': return `Safi 3tit l Jockie bach yplayi \`${r.query}\` 🎶`;
+            case 'play_music': return `Safi bda kayn-playi \`${r.query}\` 🎶`;
             case 'skip_music': return `Safi skipt l-ghnya ⏭️`;
             case 'stop_music': return `Safi w9eft l-music ⏹️`;
-            case 'leave_music': return `Safi kherrejt Jockie mn l voice 👋`;
+            case 'leave_music': return `Safi kherrejt mn l voice 👋`;
             case 'delete_channel': return `Safi ms7t channel \`${r.name}\` 🗑️`;
             case 'delete_role': return `Safi ms7t role \`${r.name}\` 🗑️`;
             default: return `Safi t-dar l-action **${name}** ✅`;
@@ -1642,6 +1696,62 @@ When all tools have returned, summarize every successful action happily in 1-2 s
       // Stay silent on errors — send nothing to chat (log only)
     }
     return;
+  }
+  // MUSIC COMMANDS: m!p <song>, m!s, m!stop, m!leave
+  if (message.content.toLowerCase().startsWith('m!')) {
+    if (!distube) return message.reply('❌ Music ma kaynch (dependencies ma installerch).');
+
+    const musicParts = message.content.slice(2).trim().split(/ +/);
+    const musicCmd = (musicParts.shift() || '').toLowerCase();
+    const musicQuery = musicParts.join(' ');
+
+    if (musicCmd === 'leave') {
+      try {
+        const q = distube.getQueue(message.guild);
+        if (q) q.stop();
+        await distube.voices.leave(message.guild);
+      } catch (e) {}
+      return message.reply('👋 Safi nkherrejt mn l voice.');
+    }
+
+    if (musicCmd === 'stop') {
+      const q = distube.getQueue(message.guild);
+      if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+      q.stop();
+      return message.reply('⏹️ W9eft l-music w 7eyedt l queue.');
+    }
+
+    if (!message.member.voice.channel) {
+      return message.reply('❌ Khassek tkon f voice channel bach tsta3mel had command.');
+    }
+
+    if (musicCmd === 's' || musicCmd === 'skip') {
+      const q = distube.getQueue(message.guild);
+      if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+      try {
+        const song = await q.skip();
+        return message.reply(`⏭️ Skipped \`${song && song.name ? song.name : 'song'}\`.`);
+      } catch (e) {
+        return message.reply('❌ Ma qdertch nskipi.');
+      }
+    }
+
+    if (musicCmd === 'p' || musicCmd === 'play') {
+      if (!musicQuery) return message.reply('❌ Kteb chi song, mithal: `m!p <song name / link>`');
+      try {
+        await distube.play(message.member.voice.channel, musicQuery, {
+          member: message.member,
+          textChannel: message.channel,
+          message,
+        });
+        return message.reply('🔎 3amr l talab...');
+      } catch (e) {
+        console.error(`[Music] play error: ${e.message}`);
+        return message.reply('❌ Ma qdertch nplayi had l-7aja. Jarreb link akhor.');
+      }
+    }
+
+    return message.reply('❓ Commands: `m!p <song>`, `m!s`, `m!stop`, `m!leave`');
   }
   // A. AJI COMMAND: aji @user
   if (message.content.toLowerCase().startsWith('aji ')) {
