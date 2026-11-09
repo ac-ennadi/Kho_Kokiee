@@ -435,6 +435,64 @@ const discordTools = [
           required: ['target_user'],
         },
       },
+      {
+        name: 'create_channel',
+        description: 'Creates a new text or voice channel in the server (e.g. "dir channel smito General", "create a voice channel named Gaming", "sawb channel voice").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            name: {
+              type: 'STRING',
+              description: 'The name of the new channel',
+            },
+            type: {
+              type: 'STRING',
+              description: 'The channel type: "text" or "voice" (defaults to text)',
+            },
+            category: {
+              type: 'STRING',
+              description: 'Optional category name or ID to place the channel in',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'create_role',
+        description: 'Creates a new server role (e.g. "dir role smito VIP", "create role Member", "sawb role Admin").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            name: {
+              type: 'STRING',
+              description: 'The name of the new role',
+            },
+            color: {
+              type: 'STRING',
+              description: 'Optional hex color for the role, like "#FF0000"',
+            },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'move_all_members',
+        description: 'Moves EVERY member currently in a source voice channel into a destination voice channel (e.g. "7rekk ga3 li f channel X l channel Y", "move everyone to my channel", "jib ga3 li f l-voice l hna").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            source_channel: {
+              type: 'STRING',
+              description: 'Name or ID of the source voice channel, or "here"/"my channel" for the caller current channel',
+            },
+            destination_channel: {
+              type: 'STRING',
+              description: 'Name or ID of the destination voice channel, or "here"/"my channel" for the caller current channel',
+            },
+          },
+          required: ['destination_channel'],
+        },
+      },
     ],
   },
 ];
@@ -454,6 +512,53 @@ function findRole(guild, roleQuery) {
 
   matched = guild.roles.cache.find(r => r.name.toLowerCase().includes(clean));
   return matched || null;
+}
+
+// Helper to find a channel by name, mention, or ID (optionally filtered by type)
+function findChannel(guild, query, type) {
+  if (!query) return null;
+  const clean = query.replace(/^[<#>#\s]+/, '').trim().toLowerCase();
+  if (/^\d{17,20}$/.test(clean)) {
+    const ch = guild.channels.cache.get(clean);
+    if (ch) return ch;
+  }
+
+  const matches = (name) => {
+    if (type === 'category' && name.type !== ChannelType.GuildCategory) return false;
+    if (type === 'voice' && !name.isVoiceBased()) return false;
+    if (type === 'text' && !name.isTextBased()) return false;
+    return name.name.toLowerCase() === clean;
+  };
+
+  let matched = guild.channels.cache.find(matches);
+  if (matched) return matched;
+
+  const includes = (name) => {
+    if (type === 'category' && name.type !== ChannelType.GuildCategory) return false;
+    if (type === 'voice' && !name.isVoiceBased()) return false;
+    if (type === 'text' && !name.isTextBased()) return false;
+    return name.name.toLowerCase().includes(clean);
+  };
+  matched = guild.channels.cache.find(includes);
+  return matched || null;
+}
+
+// Helper to find a voice channel by name or ID
+function findVoiceChannel(guild, query) {
+  return findChannel(guild, query, 'voice');
+}
+
+// Extract the plain text from a Gemini response (skips "thought" parts on thinking models)
+function extractResponseText(response) {
+  if (!response) return '';
+  try {
+    const text = response.text();
+    if (text && text.trim()) return text.trim();
+  } catch (e) {}
+  const parts = response?.candidates?.[0]?.content?.parts || [];
+  const nonThought = parts.filter(p => !p.thought && p.text);
+  if (nonThought.length > 0) return nonThought.map(p => p.text).join('\n').trim();
+  return parts.map(p => p.text).filter(Boolean).join('\n').trim();
 }
 
 // Strict role verification check for managing roles
@@ -545,13 +650,19 @@ function canCallerMove(caller) {
 // Tool executor function with strict role verification
 async function executeDiscordTool(name, args, message) {
   const caller = message.member;
-  const targetMember = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id);
 
-  if (!targetMember) {
-    return {
-      success: false,
-      error: `Could not find any user matching "${args.target_user}". Ask caller to mention them like @Username.`,
-    };
+  // Tools that don't operate on a single target user (no target_user lookup needed)
+  const noTargetTools = ['create_channel', 'create_role', 'move_all_members'];
+
+  let targetMember = null;
+  if (!noTargetTools.includes(name)) {
+    targetMember = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id);
+    if (!targetMember) {
+      return {
+        success: false,
+        error: `Could not find any user matching "${args.target_user}". Ask caller to mention them like @Username.`,
+      };
+    }
   }
 
   // 1. GIVE ROLE
@@ -806,6 +917,112 @@ async function executeDiscordTool(name, args, message) {
     }
   }
 
+  // 9. CREATE CHANNEL
+  if (name === 'create_channel') {
+    const isOwner = message.guild.ownerId === caller.id;
+    const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+    const canManageChannels = caller.permissions.has(PermissionsBitField.Flags.ManageChannels);
+    const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+    if (!isOwner && !isAdmin && !canManageChannels && !hasStaffRole) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to create channels. Explain in Moroccan Darija that only staff/admins can create channels.` };
+    }
+
+    const channelName = (args.name || '').trim();
+    if (!channelName) return { success: false, error: 'A channel name is required.' };
+
+    const typeRaw = (args.type || 'text').toLowerCase();
+    const isVoice = typeRaw === 'voice' || typeRaw === 'vocal' || typeRaw === 'vc';
+    const channelType = isVoice ? ChannelType.GuildVoice : ChannelType.GuildText;
+
+    let parentId = null;
+    if (args.category) {
+      const cat = findChannel(message.guild, args.category, 'category');
+      if (cat) parentId = cat.id;
+    }
+
+    try {
+      const newChannel = await message.guild.channels.create({
+        name: channelName,
+        type: channelType,
+        ...(parentId ? { parent: parentId } : {}),
+      });
+      await sendLog(message.guild, `➕ **AI Channel Created:** <@${caller.id}> created ${isVoice ? 'voice' : 'text'} channel \`${newChannel.name}\`.`);
+      return { success: true, name: newChannel.name, mention: `<#${newChannel.id}>`, type: isVoice ? 'voice' : 'text' };
+    } catch (err) {
+      return { success: false, error: `Failed to create channel: ${err.message}` };
+    }
+  }
+
+  // 10. CREATE ROLE
+  if (name === 'create_role') {
+    const isOwner = message.guild.ownerId === caller.id;
+    const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+    const canManageRoles = caller.permissions.has(PermissionsBitField.Flags.ManageRoles);
+    const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+    if (!isOwner && !isAdmin && !canManageRoles && !hasStaffRole) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to create roles. Explain in Moroccan Darija that only staff/admins can create roles.` };
+    }
+
+    const roleName = (args.name || '').trim();
+    if (!roleName) return { success: false, error: 'A role name is required.' };
+
+    const hex = (args.color || '').replace(/^#/, '').toUpperCase();
+    const roleData = { name: roleName };
+    if (/^[0-9A-F]{6}$/.test(hex)) roleData.color = hex;
+
+    try {
+      const role = await message.guild.roles.create(roleData);
+      await sendLog(message.guild, `➕ **AI Role Created:** <@${caller.id}> created role \`${role.name}\`.`);
+      return { success: true, name: role.name, mention: `<@&${role.id}>` };
+    } catch (err) {
+      return { success: false, error: `Failed to create role: ${err.message}` };
+    }
+  }
+
+  // 11. MOVE ALL MEMBERS FROM ONE VOICE CHANNEL TO ANOTHER
+  if (name === 'move_all_members') {
+    if (!canCallerMove(caller)) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to move members. Explain in Moroccan Darija that they need move permission.` };
+    }
+
+    const callerVoice = caller.voice.channel;
+    const hereKeywords = ['here', 'me', 'my channel', 'my voice', 'hna', 'l hna', 'hadi', 'my vc'];
+
+    let source = callerVoice;
+    if (args.source_channel && !hereKeywords.includes(args.source_channel.toLowerCase().trim())) {
+      source = findVoiceChannel(message.guild, args.source_channel);
+    }
+
+    let destination = callerVoice;
+    if (args.destination_channel && !hereKeywords.includes(args.destination_channel.toLowerCase().trim())) {
+      const found = findVoiceChannel(message.guild, args.destination_channel);
+      if (found) destination = found;
+    }
+
+    if (!source) return { success: false, error: 'Could not find the source voice channel. Ask the caller to specify which channel to move people from.' };
+    if (!destination) return { success: false, error: 'Could not find the destination voice channel, and the caller is not connected to a voice channel.' };
+    if (source.id === destination.id) return { success: false, error: 'Source and destination channels are the same.' };
+
+    const members = Array.from(source.members.values());
+    if (members.length === 0) return { success: false, error: `No members are in "${source.name}" to move.` };
+
+    let moved = 0;
+    const errors = [];
+    for (const m of members) {
+      try {
+        await m.voice.setChannel(destination);
+        moved++;
+      } catch (e) {
+        errors.push(`${m.displayName}: ${e.message}`);
+      }
+    }
+
+    await sendLog(message.guild, `🧲 **AI Bulk Move:** <@${caller.id}> moved ${moved} member(s) from \`${source.name}\` to \`${destination.name}\`.`);
+    return { success: true, moved, source: source.name, dest: destination.name, errors };
+  }
+
   return { success: false, error: `Unknown action: ${name}` };
 }
 
@@ -930,9 +1147,15 @@ You have Discord moderation tools:
 - disconnect_member: Call this tool if someone asks to disconnect or kick someone from voice (e.g. "kherrej @user mn voice", "disconnect @user").
 - deafen_member: Call this tool if someone asks to deafen a user in voice (e.g. "sdem @user", "deafen @user").
 - undeafen_member: Call this tool if someone asks to undeafen a user in voice (e.g. "7eyed sdem l @user", "undeafen @user").
+- create_channel: Call this tool if someone asks to create a channel (e.g. "dir channel smito General", "create a voice channel named Gaming", "sawb channel voice").
+- create_role: Call this tool if someone asks to create a role (e.g. "dir role smito VIP", "create role Member", "sawb role Admin").
+- move_all_members: Call this tool if someone asks to move EVERYONE in a voice channel to another channel (e.g. "7rekk ga3 li f channel X l channel Y", "move everyone to my channel", "jib ga3 li f l-voice l hna").
+
+MULTI-STEP TASKS:
+You can perform several actions in a single request. When the user asks for multiple things at once (e.g. "disconnect @user, then create a voice channel, then mute @user"), call the needed tools one after another. After each tool result, decide whether another tool is still needed and call it. Only give the final Darija summary once ALL requested actions are done.
 
 For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
-When a tool returns a result, summarize the action happily or explain any permission issue politely in 1 short Moroccan Darija sentence.`,
+When all tools have returned, summarize every action happily (or explain any permission issue politely) in 1-2 short Moroccan Darija sentences.`,
         tools: discordTools,
       });
 
@@ -948,57 +1171,56 @@ When a tool returns a result, summarize the action happily or explain any permis
       let result = await chat.sendMessage(finalPrompt);
       let responseText = '';
 
-      const functionCalls = result.response.functionCalls();
-      if (functionCalls && functionCalls.length > 0) {
-        const call = functionCalls[0];
-        console.log(`[AI Tool] Model requested ${call.name} with args:`, call.args);
+      const MAX_TOOL_ROUNDS = 6;
+      const executedTools = []; // { name, result } for fallback summary
 
-        const toolResult = await executeDiscordTool(call.name, call.args, message);
-        console.log(`[AI Tool] Execution result:`, toolResult);
+      // Loop to support chained multi-step tasks: keep executing tool calls until
+      // the model stops requesting them (e.g. "disconnect @user, create a channel, mute them")
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        const functionCalls = result.response.functionCalls();
+        if (!functionCalls || functionCalls.length === 0) {
+          responseText = extractResponseText(result.response);
+          break;
+        }
 
-        const followUp = await chat.sendMessage([
-          {
+        // Execute every tool the model requested this round
+        const functionResponses = [];
+        for (const call of functionCalls) {
+          console.log(`[AI Tool] Model requested ${call.name} with args:`, call.args);
+          const toolResult = await executeDiscordTool(call.name, call.args, message);
+          console.log(`[AI Tool] Execution result:`, toolResult);
+          executedTools.push({ name: call.name, result: toolResult });
+          functionResponses.push({
             functionResponse: {
               name: call.name,
               response: toolResult,
             },
-          },
-        ]);
-
-        try {
-          responseText = followUp.response.text()?.trim();
-        } catch (e) {
-          console.warn(`[AI] followUp text() warning: ${e.message}`);
+          });
         }
 
-        if (!responseText && toolResult.success) {
-          if (call.name === 'give_role') responseText = `Safi a khay, 3tit role **${toolResult.role}** l ${toolResult.mention || toolResult.user} ✅`;
-          else if (call.name === 'remove_role') responseText = `Safi 7eyedt role **${toolResult.role}** mn ${toolResult.mention || toolResult.user} ✅`;
-          else if (call.name === 'mute_member') responseText = `Safi a khay, sket ${toolResult.mention || toolResult.user} f l-voice 👍`;
-          else if (call.name === 'unmute_member') responseText = `Safi telqt ${toolResult.mention || toolResult.user} 👍`;
-          else if (call.name === 'move_member') responseText = `Hani jbedt ${toolResult.mention || toolResult.user} l ${toolResult.channel} 😉`;
-          else if (call.name === 'disconnect_member') responseText = `Safi kherrejt ${toolResult.mention || toolResult.user} mn l voice 🚪`;
-          else if (call.name === 'deafen_member') responseText = `Safi sdemt ${toolResult.mention || toolResult.user} f voice 🔇`;
-          else if (call.name === 'undeafen_member') responseText = `Safi 7eyedt sdem l ${toolResult.mention || toolResult.user} 🔊`;
-        } else if (!responseText && !toolResult.success) {
-          responseText = `Ma qdertch ndir had l-action: ${toolResult.error}`;
-        }
-      } else {
-        try {
-          responseText = result.response.text()?.trim();
-        } catch (textErr) {
-          console.warn(`[AI] response.text() warning: ${textErr.message}`);
-        }
+        result = await chat.sendMessage(functionResponses);
+        responseText = extractResponseText(result.response);
+      }
 
-        if (!responseText) {
-          const parts = result.response?.candidates?.[0]?.content?.parts || [];
-          const nonThought = parts.filter(p => !p.thought && p.text);
-          if (nonThought.length > 0) {
-            responseText = nonThought.map(p => p.text).join('\n').trim();
-          } else {
-            responseText = parts.map(p => p.text).filter(Boolean).join('\n').trim();
+      // Fallback: if Gemini produced no final text, build a Darija summary of executed tools
+      if (!responseText && executedTools.length > 0) {
+        responseText = executedTools.map(({ name, result: r }) => {
+          if (!r || r.success === false) return `Ma qdertch ndir **${name}**: ${r?.error || 'unknown error'}`;
+          switch (name) {
+            case 'give_role': return `Safi a khay, 3tit role **${r.role}** l ${r.mention || r.user} ✅`;
+            case 'remove_role': return `Safi 7eyedt role **${r.role}** mn ${r.mention || r.user} ✅`;
+            case 'mute_member': return `Safi a khay, sket ${r.mention || r.user} f l-voice 👍`;
+            case 'unmute_member': return `Safi telqt ${r.mention || r.user} 👍`;
+            case 'move_member': return `Hani jbedt ${r.mention || r.user} l ${r.channel} 😉`;
+            case 'disconnect_member': return `Safi kherrejt ${r.mention || r.user} mn l voice 🚪`;
+            case 'deafen_member': return `Safi sdemt ${r.mention || r.user} f voice 🔇`;
+            case 'undeafen_member': return `Safi 7eyedt sdem l ${r.mention || r.user} 🔊`;
+            case 'move_all_members': return `Safi 7rekkt **${r.moved}** members mn \`${r.source}\` l \`${r.dest}\` 🧲`;
+            case 'create_channel': return `Safi creatit ${r.type === 'voice' ? 'voice' : 'text'} channel ${r.mention || r.name} ✅`;
+            case 'create_role': return `Safi creatit role ${r.mention || r.name} ✅`;
+            default: return `Safi t-dar l-action **${name}** ✅`;
           }
-        }
+        }).join('\n');
       }
 
       if (!responseText) throw new Error('Gemini returned an empty response');
