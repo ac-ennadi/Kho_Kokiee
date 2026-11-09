@@ -1,6 +1,19 @@
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField, AuditLogEvent } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Put bundled ffmpeg (ffmpeg-static) on PATH so yt-dlp / distube can use it
+try {
+  const ffmpegPath = require('ffmpeg-static');
+  if (ffmpegPath) {
+    const path = require('path');
+    const ffmpegDir = path.dirname(ffmpegPath);
+    process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}`;
+    console.log(`[Music] Bundled ffmpeg ready: ${ffmpegPath}`);
+  }
+} catch (e) {
+  console.warn(`[Music] ffmpeg-static unavailable: ${e.message}`);
+}
+
 // Music (optional): wrapped so the bot still runs if these libraries are missing
 let DisTube = null;
 let YtDlpPlugin = null;
