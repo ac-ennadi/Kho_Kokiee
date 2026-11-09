@@ -627,6 +627,34 @@ const discordTools = [
           required: [],
         },
       },
+      {
+        name: 'delete_channel',
+        description: 'Deletes a text or voice channel (e.g. "ms7 channel X", "delete channel #general", "7eyed channel smito Y").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            channel_name: {
+              type: 'STRING',
+              description: 'The name, mention, or ID of the channel to delete',
+            },
+          },
+          required: ['channel_name'],
+        },
+      },
+      {
+        name: 'delete_role',
+        description: 'Deletes a server role (e.g. "ms7 role VIP", "delete role Member", "7eyed role smito X").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            role_name: {
+              type: 'STRING',
+              description: 'The name, mention, or ID of the role to delete',
+            },
+          },
+          required: ['role_name'],
+        },
+      },
     ],
   },
 ];
@@ -634,7 +662,7 @@ const discordTools = [
 // Helper to find a role by name, mention, or ID
 function findRole(guild, roleQuery) {
   if (!roleQuery) return null;
-  const clean = roleQuery.replace(/^[<@&>#\s]+/, '').trim().toLowerCase();
+  const clean = roleQuery.replace(/^[<@&>#\s]+/, '').replace(/[>\s]+$/, '').trim().toLowerCase();
 
   if (/^\d{17,20}$/.test(clean)) {
     const role = guild.roles.cache.get(clean);
@@ -651,7 +679,7 @@ function findRole(guild, roleQuery) {
 // Helper to find a channel by name, mention, or ID (optionally filtered by type)
 function findChannel(guild, query, type) {
   if (!query) return null;
-  const clean = query.replace(/^[<#>#\s]+/, '').trim().toLowerCase();
+  const clean = query.replace(/^[<#>#\s]+/, '').replace(/[>\s]+$/, '').trim().toLowerCase();
   if (/^\d{17,20}$/.test(clean)) {
     const ch = guild.channels.cache.get(clean);
     if (ch) return ch;
@@ -807,7 +835,7 @@ async function executeDiscordTool(name, args, message) {
   const caller = message.member;
 
   // Tools that don't operate on a single target user (no target_user lookup needed)
-  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'play_music', 'skip_music', 'stop_music', 'leave_music'];
+  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
 
   let targetMember = null;
   if (!noTargetTools.includes(name)) {
@@ -1306,6 +1334,69 @@ async function executeDiscordTool(name, args, message) {
     }
   }
 
+  // 16. DELETE CHANNEL
+  if (name === 'delete_channel') {
+    const isOwner = message.guild.ownerId === caller.id;
+    const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+    const canManageChannels = caller.permissions.has(PermissionsBitField.Flags.ManageChannels);
+    const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+    if (!isOwner && !isAdmin && !canManageChannels && !hasStaffRole) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to delete channels.` };
+    }
+
+    const target = findChannel(message.guild, args.channel_name);
+    if (!target) return { success: false, error: `Channel "${args.channel_name}" not found in this server.` };
+
+    try {
+      const chName = target.name;
+      await target.delete();
+      await sendLog(message.guild, `🗑️ **AI Channel Deleted:** <@${caller.id}> deleted channel \`${chName}\`.`);
+      return { success: true, name: chName };
+    } catch (e) {
+      return { success: false, error: `Failed to delete channel: ${e.message}` };
+    }
+  }
+
+  // 17. DELETE ROLE
+  if (name === 'delete_role') {
+    const isOwner = message.guild.ownerId === caller.id;
+    const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
+    const canManageRoles = caller.permissions.has(PermissionsBitField.Flags.ManageRoles);
+    const hasStaffRole = STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID);
+
+    if (!isOwner && !isAdmin && !canManageRoles && !hasStaffRole) {
+      return { success: false, error: `Permission denied: ${caller.displayName} does not have permission to delete roles.` };
+    }
+
+    const role = findRole(message.guild, args.role_name);
+    if (!role) return { success: false, error: `Role "${args.role_name}" not found in this server.` };
+
+    if (ROLE_ID && role.id === ROLE_ID) {
+      return { success: false, error: 'Cannot delete the main server membership role.' };
+    }
+    if (role.managed) {
+      return { success: false, error: `Cannot delete "${role.name}" because it is managed by an integration.` };
+    }
+
+    const botMember = message.guild.members.me;
+    if (role.position >= botMember.roles.highest.position) {
+      return { success: false, error: `Cannot delete "${role.name}" because it is higher than or equal to my bot role.` };
+    }
+    if (!isOwner && role.position >= caller.roles.highest.position) {
+      return { success: false, error: `Permission denied: the "${role.name}" role is equal to or higher than your own highest role.` };
+    }
+
+    try {
+      const roleName = role.name;
+      await role.delete();
+      await sendLog(message.guild, `🗑️ **AI Role Deleted:** <@${caller.id}> deleted role \`${roleName}\`.`);
+      return { success: true, name: roleName };
+    } catch (e) {
+      return { success: false, error: `Failed to delete role: ${e.message}` };
+    }
+  }
+
   return { success: false, error: `Unknown action: ${name}` };
 }
 
@@ -1440,6 +1531,8 @@ You have Discord moderation tools:
 - skip_music: Call this tool if someone asks to skip the song (e.g. "skip", "dozi l-li moraha").
 - stop_music: Call this tool if someone asks to stop the music (e.g. "stop l-music", "w9ef l-music").
 - leave_music: Call this tool if someone asks to make the music bot leave the voice channel (e.g. "kherrej Jockie", "leave voice").
+- delete_channel: Call this tool if someone asks to delete a channel (e.g. "ms7 channel X", "delete channel #general", "7eyed channel smito Y").
+- delete_role: Call this tool if someone asks to delete a role (e.g. "ms7 role VIP", "delete role Member", "7eyed role smito X").
 
 MULTI-STEP TASKS:
 You can perform several actions in a single request. When the user asks for multiple things at once (e.g. "disconnect @user, then create a voice channel, then mute @user"), call the needed tools one after another. After each tool result, decide whether another tool is still needed and call it. Only give the final Darija summary once ALL requested actions are done.
@@ -1523,6 +1616,8 @@ When all tools have returned, summarize every successful action happily in 1-2 s
             case 'skip_music': return `Safi skipt l-ghnya ⏭️`;
             case 'stop_music': return `Safi w9eft l-music ⏹️`;
             case 'leave_music': return `Safi kherrejt Jockie mn l voice 👋`;
+            case 'delete_channel': return `Safi ms7t channel \`${r.name}\` 🗑️`;
+            case 'delete_role': return `Safi ms7t role \`${r.name}\` 🗑️`;
             default: return `Safi t-dar l-action **${name}** ✅`;
           }
         }).join('\n');
