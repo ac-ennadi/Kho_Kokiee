@@ -18,6 +18,7 @@ try {
 // Music (optional): Separated try/catch blocks so one missing plugin doesn't break everything
 let DisTube = null;
 let YtDlpPlugin = null;
+let SoundCloudPlugin = null;
 
 try {
   DisTube = require('distube').DisTube;
@@ -31,10 +32,19 @@ try {
   console.warn(`[Music] @distube/yt-dlp not installed (will fallback to default ytdl): ${e.message}`);
 }
 
-// Music playback setup (distube v5 + yt-dlp)
+try {
+  SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin;
+} catch (e) {
+  console.warn(`[Music] @distube/soundcloud not installed: ${e.message}`);
+}
+
+// Music playback setup (distube v5 + yt-dlp + soundcloud)
 const plugins = [];
 if (YtDlpPlugin) {
   plugins.push(new YtDlpPlugin({ update: true }));
+}
+if (SoundCloudPlugin) {
+  plugins.push(new SoundCloudPlugin());
 }
 
 const client = new Client({
@@ -1736,12 +1746,12 @@ When all tools have returned, summarize every successful action happily in 1-2 s
         responseText = extractResponseText(result.response);
       }
 
-      // If any requested action failed, stay silent (send nothing to chat) — just log it
+      // If an action failed, log it, but DO NOT stop the bot from replying!
       const failedTools = executedTools.filter(t => t.result && t.result.success === false);
       if (failedTools.length > 0) {
-        console.warn(`[AI] Action(s) failed, staying silent:`, failedTools.map(f => `${f.name}: ${f.result.error}`).join(' | '));
-        await sendLog(message.guild, `⚠️ **AI Action Failed (silent):** <@${message.author.id}> — ${failedTools.map(f => `\`${f.name}\`: ${f.result.error}`).join(' | ')}`);
-        return;
+        console.warn(`[AI] Action(s) failed:`, failedTools.map(f => `${f.name}: ${f.result.error}`).join(' | '));
+        await sendLog(message.guild, `⚠️ **AI Action Failed:** <@${message.author.id}> — ${failedTools.map(f => `\`${f.name}\`: ${f.result.error}`).join(' | ')}`);
+        // Intentionally no 'return;' here so the bot still replies to the user in Darija saying it failed.
       }
 
       // Fallback: if Gemini produced no final text, build a Darija summary of executed tools
