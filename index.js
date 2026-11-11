@@ -1779,63 +1779,61 @@ When all tools have returned, summarize every successful action happily in 1-2 s
     }
     return;
   }
-  // MUSIC COMMANDS: m!p <song>, m!s, m!stop, m!leave
-  if (message.content.toLowerCase().startsWith('m!')) {
+
+  // DIRECT MUSIC COMMANDS: play <song>, stop music, skip music, leave voice
+  const msgLower = message.content.toLowerCase();
+
+  if (msgLower.startsWith('play ')) {
+    const musicQuery = message.content.slice(5).trim();
     if (!distube) return message.reply('❌ Music ma kaynch (dependencies ma installerch).');
+    if (!message.member.voice.channel) return message.reply('❌ Khassek tkon f voice channel bach tplayi l-music.');
+    if (!musicQuery) return message.reply('❌ Kteb smit l-ghnya. Mithal: `play chkoun li gal`');
 
-    const musicParts = message.content.slice(2).trim().split(/ +/);
-    const musicCmd = (musicParts.shift() || '').toLowerCase();
-    const musicQuery = musicParts.join(' ');
-
-    if (musicCmd === 'leave') {
-      try {
-        const q = distube.getQueue(message.guild);
-        if (q) q.stop();
-        await distube.voices.leave(message.guild);
-      } catch (e) {}
-      return message.reply('👋 Safi nkherrejt mn l voice.');
+    try {
+      await distube.play(message.member.voice.channel, musicQuery, {
+        member: message.member,
+        textChannel: message.channel,
+        message,
+      });
+      return message.reply('🔎 3la rassi w 3ini, ana njibha daba...');
+    } catch (e) {
+      console.error(`[Music] play error: ${e.message}`);
+      return message.reply('❌ Ma qdertch nplayi had l-7aja. Jarreb link aw smia khra.');
     }
-
-    if (musicCmd === 'stop') {
-      const q = distube.getQueue(message.guild);
-      if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
-      q.stop();
-      return message.reply('⏹️ W9eft l-music w 7eyedt l queue.');
-    }
-
-    if (!message.member.voice.channel) {
-      return message.reply('❌ Khassek tkon f voice channel bach tsta3mel had command.');
-    }
-
-    if (musicCmd === 's' || musicCmd === 'skip') {
-      const q = distube.getQueue(message.guild);
-      if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
-      try {
-        const song = await q.skip();
-        return message.reply(`⏭️ Skipped \`${song && song.name ? song.name : 'song'}\`.`);
-      } catch (e) {
-        q.stop();
-        return message.reply('⏹️ Skipped the last song, stopped playing.');
-      }
-    }
-
-    if (musicCmd === 'p' || musicCmd === 'play') {
-      if (!musicQuery) return message.reply('❌ Kteb chi song, mithal: `m!p <song name / link>`');
-      try {
-        await distube.play(message.member.voice.channel, musicQuery, {
-          member: message.member,
-          textChannel: message.channel,
-          message,
-        });
-        return message.reply('🔎 3amr l talab...');
-      } catch (e) {
-        console.error(`[Music] play error: ${e.message}`);
-        return message.reply('❌ Ma qdertch nplayi had l-7aja. Jarreb link akhor.');
-      }
-    }
-
-    return message.reply('❓ Commands: `m!p <song>`, `m!s`, `m!stop`, `m!leave`');
   }
+
+  if (msgLower === 'stop music' || msgLower === 'stop') {
+    if (!distube) return message.reply('❌ Music ma kaynch.');
+    const q = distube.getQueue(message.guild);
+    if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+    q.stop();
+    return message.reply('⏹️ Safi w9eft l-music w msa7t l-queue.');
+  }
+
+  if (msgLower === 'skip music' || msgLower === 'skip') {
+    if (!distube) return message.reply('❌ Music ma kaynch.');
+    if (!message.member.voice.channel) return message.reply('❌ Khassek tkon f voice channel.');
+    const q = distube.getQueue(message.guild);
+    if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+    try {
+      const song = await q.skip();
+      return message.reply(`⏭️ Dozt l-ghnya: \`${song && song.name ? song.name : 'Next song'}\`.`);
+    } catch (e) {
+      q.stop();
+      return message.reply('⏹️ Hada akher track, w9eft l-music.');
+    }
+  }
+
+  if (msgLower === 'leave voice' || msgLower === 'leave music') {
+    if (!distube) return message.reply('❌ Music ma kaynch.');
+    try {
+      const q = distube.getQueue(message.guild);
+      if (q) q.stop();
+      await distube.voices.leave(message.guild);
+      return message.reply('👋 Safi khrejt mn l-voice. Thllaw!');
+    } catch (e) {}
+  }
+
   // A. AJI COMMAND: aji @user
   if (message.content.toLowerCase().startsWith('aji ')) {
     const hasMoveRole = MOVE_ROLE_ID && message.member.roles.cache.has(MOVE_ROLE_ID);
