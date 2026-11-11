@@ -1703,20 +1703,36 @@ When all tools have returned, summarize every successful action happily in 1-2 s
 
         // Execute every tool the model requested this round
         const functionResponses = [];
+        const textFallback = []; // Added to bypass older SDK role bugs
         for (const call of functionCalls) {
           console.log(`[AI Tool] Model requested ${call.name} with args:`, call.args);
           const toolResult = await executeDiscordTool(call.name, call.args, message);
           console.log(`[AI Tool] Execution result:`, toolResult);
           executedTools.push({ name: call.name, result: toolResult });
+          
           functionResponses.push({
             functionResponse: {
               name: call.name,
               response: toolResult,
             },
           });
+          // Create a text-based version of the tool result just in case
+          textFallback.push(`[System: Tool '${call.name}' returned: ${JSON.stringify(toolResult)}]`);
         }
 
-        result = await chat.sendMessage(functionResponses);
+        try {
+          // Attempt native tool response first
+          result = await chat.sendMessage(functionResponses);
+        } catch (apiErr) {
+          // If the SDK uses the outdated 'function' role and gets a 400 error, fallback to plain text
+          if (apiErr.message.includes("Role 'function' is not supported") || apiErr.message.includes("400")) {
+            console.log(`[AI Tool] Bypassing SDK role bug by sending results as text...`);
+            result = await chat.sendMessage(textFallback.join('\n'));
+          } else {
+            throw apiErr;
+          }
+        }
+        
         responseText = extractResponseText(result.response);
       }
 
