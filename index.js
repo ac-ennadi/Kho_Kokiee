@@ -2,26 +2,39 @@ const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitFiel
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Put bundled ffmpeg (ffmpeg-static) on PATH so yt-dlp / distube can use it
+let ffmpegPathString = null;
 try {
-  const ffmpegPath = require('ffmpeg-static');
-  if (ffmpegPath) {
+  ffmpegPathString = require('ffmpeg-static');
+  if (ffmpegPathString) {
     const path = require('path');
-    const ffmpegDir = path.dirname(ffmpegPath);
+    const ffmpegDir = path.dirname(ffmpegPathString);
     process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}`;
-    console.log(`[Music] Bundled ffmpeg ready: ${ffmpegPath}`);
+    console.log(`[Music] Bundled ffmpeg ready: ${ffmpegPathString}`);
   }
 } catch (e) {
   console.warn(`[Music] ffmpeg-static unavailable: ${e.message}`);
 }
 
-// Music (optional): wrapped so the bot still runs if these libraries are missing
+// Music (optional): Separated try/catch blocks so one missing plugin doesn't break everything
 let DisTube = null;
 let YtDlpPlugin = null;
+
 try {
-  ({ DisTube } = require('distube'));
-  ({ YtDlpPlugin } = require('@distube/yt-dlp'));
+  DisTube = require('distube').DisTube;
 } catch (e) {
-  console.warn(`[Music] Music libraries not installed, music commands disabled: ${e.message}`);
+  console.warn(`[Music] distube library not installed: ${e.message}`);
+}
+
+try {
+  YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin;
+} catch (e) {
+  console.warn(`[Music] @distube/yt-dlp not installed (will fallback to default ytdl): ${e.message}`);
+}
+
+// Music playback setup (distube v5 + yt-dlp)
+const plugins = [];
+if (YtDlpPlugin) {
+  plugins.push(new YtDlpPlugin({ update: true }));
 }
 
 const client = new Client({
@@ -38,11 +51,12 @@ const client = new Client({
   },
 });
 
-// Music playback setup (distube v5 + yt-dlp)
-const distube = (DisTube && YtDlpPlugin)
+const distube = DisTube
   ? new DisTube(client, {
-      plugins: [new YtDlpPlugin({ update: true })],
+      plugins: plugins,
       emitNewSongOnly: true,
+      // Pass ffmpeg path directly to guarantee it works on Railway without PATH issues
+      ffmpeg: { path: ffmpegPathString || 'ffmpeg' }
     })
   : null;
 
@@ -1405,7 +1419,7 @@ async function executeDiscordTool(name, args, message) {
       await q.skip();
       return { success: true };
     } catch (e) {
-      return { success: false, error: `Failed to skip: ${e.message}` };
+      return { success: false, error: `Failed to skip (might be the last song): ${e.message}` };
     }
   }
 
@@ -1613,26 +1627,47 @@ When recent channel history is provided in the prompt, use it to track who said 
 
 You have Discord moderation tools:
 - give_role: Call this tool if someone asks to give/assign a role to someone (e.g. "3tih role Member", "give @User role VIP", "3ti role l @User").
+
 - remove_role: Call this tool if someone asks to remove/take away a role from someone (e.g. "7eyed role VIP mn @User", "remove role from @User").
+
 - mute_member: Call this tool if someone asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user").
+
 - unmute_member: Call this tool if someone asks to unmute a user (e.g. "telqo @user", "unmute @user", "tle9 l-user").
+
 - move_member: Call this tool if someone asks to pull, move, or bring a user to voice (e.g. "jib @user", "jbed @user", "aji @user", "move @user l voice").
+
 - disconnect_member: Call this tool if someone asks to disconnect or kick someone from voice (e.g. "kherrej @user mn voice", "disconnect @user").
+
 - deafen_member: Call this tool if someone asks to deafen a user in voice (e.g. "sdem @user", "deafen @user").
+
 - undeafen_member: Call this tool if someone asks to undeafen a user in voice (e.g. "7eyed sdem l @user", "undeafen @user").
+
 - create_channel: Call this tool if someone asks to create a channel (e.g. "dir channel smito General", "create a voice channel named Gaming", "sawb channel voice").
+
 - create_role: Call this tool if someone asks to create a role (e.g. "dir role smito VIP", "create role Member", "sawb role Admin").
+
 - move_all_members: Call this tool if someone asks to move EVERYONE in a voice channel to another channel (e.g. "7rekk ga3 li f channel X l channel Y", "move everyone to my channel", "jib ga3 li f l-voice l hna").
+
 - move_members: Call this tool if someone asks to move several specific people to a voice channel (e.g. "jbed @A w @B l hna", "move @A and @B to my channel", "jib @A, @B l voice").
+
 - dm_members: Call this tool if someone asks to send a private message to one or more people (e.g. "sift l @User f privé: salam", "dm @A and @B the rules").
+
 - start_verification: Call this tool if someone asks to verify, or asks to call/tag staff to verify them (e.g. "bghit nverify", "3ayet l staff yverify-iw", "call staff to verify me").
+
 - join_voice: Call this tool if someone asks you to join a voice channel (e.g. "join the vc", "dkhoul l voice", "aji l voice", "join the call").
+
 - play_music: Call this tool if someone asks to play a song/music (e.g. "play the music", "play some chill music", "3zef chi song", "diro chi 7aja").
+
 - skip_music: Call this tool if someone asks to skip or change the song (e.g. "skip", "change it", "baddel l-ghnya", "dozi l-li moraha").
+
 - stop_music: Call this tool if someone asks to stop the music (e.g. "stop l-music", "w9ef l-music").
+
 - leave_music: Call this tool if someone asks you to leave the voice channel (e.g. "leave", "kherrej mn l voice", "leave voice").
+
 - delete_channel: Call this tool if someone asks to delete a channel (e.g. "ms7 channel X", "delete channel #general", "7eyed channel smito Y").
+
 - delete_role: Call this tool if someone asks to delete a role (e.g. "ms7 role VIP", "delete role Member", "7eyed role smito X").
+
 
 MULTI-STEP TASKS:
 You can perform several actions in a single request. When the user asks for multiple things at once (e.g. "disconnect @user, then create a voice channel, then mute @user"), call the needed tools one after another. After each tool result, decide whether another tool is still needed and call it. Only give the final Darija summary once ALL requested actions are done.
@@ -1779,7 +1814,8 @@ When all tools have returned, summarize every successful action happily in 1-2 s
         const song = await q.skip();
         return message.reply(`⏭️ Skipped \`${song && song.name ? song.name : 'song'}\`.`);
       } catch (e) {
-        return message.reply('❌ Ma qdertch nskipi.');
+        q.stop();
+        return message.reply('⏹️ Skipped the last song, stopped playing.');
       }
     }
 
