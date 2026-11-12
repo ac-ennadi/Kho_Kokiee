@@ -108,6 +108,7 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
 
 // AI Setup: Dynamically fetch REAL Gemini models (Fixes the 503 loop of death)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 let availableModelsCache = [];
 let genAI = null;
 if (GEMINI_API_KEY) {
@@ -115,9 +116,11 @@ if (GEMINI_API_KEY) {
 }
 
 async function fetchSupportedModels() {
-  if (!GEMINI_API_KEY) return ['gemini-1.5-flash'];
+  if (!GEMINI_API_KEY) return [];
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (res.ok) {
       const data = await res.json();
       const models = (data.models || [])
@@ -131,36 +134,31 @@ async function fetchSupportedModels() {
   } catch (e) {
     console.error(`Could not fetch model list: ${e.message}`);
   }
-  return ['gemini-1.5-flash'];
+  return [];
 }
 
-async function getModelCandidates() {
-  if (availableModelsCache.length === 0) {
-    await fetchSupportedModels();
-  }
-  // Only extract real, valid flash models returned by Google's API
-  const flashModels = availableModelsCache.filter(m => 
+function getModelCandidates() {
+  // Never wait for model discovery on a user request. Use the configured fast
+  // model immediately and keep one discovered Flash model as a 404 fallback.
+  const flashModels = availableModelsCache.filter(m =>
     m.toLowerCase().includes('flash') && 
     !m.toLowerCase().includes('tts') && 
     !m.toLowerCase().includes('vision') &&
     !m.toLowerCase().includes('embedding')
   );
-
-  // Prioritize flash-8b (fastest) or standard flash
-  const sorted = flashModels.sort((a, b) => {
-    if (a.includes('8b')) return -1;
-    if (b.includes('8b')) return 1;
-    return 0;
-  });
-
-  return sorted.length > 0 ? sorted : ['gemini-1.5-flash'];
+  const fallback = flashModels.find(m => m !== DEFAULT_GEMINI_MODEL && m.toLowerCase().includes('flash-lite'))
+    || flashModels.find(m => m !== DEFAULT_GEMINI_MODEL);
+  return fallback ? [DEFAULT_GEMINI_MODEL, fallback] : [DEFAULT_GEMINI_MODEL];
 }
+
+// Warm the model cache during startup without blocking Discord events or replies.
+if (GEMINI_API_KEY) fetchSupportedModels().catch(() => {});
 
 const aiUserCooldowns = new Map();
 const AI_COOLDOWN_MS = 2000;
 const AI_MAX_QUESTION_CHARS = 1500;
-const AI_MAX_CONTEXT_CHARS = 2500;
-const AI_MAX_OUTPUT_TOKENS = 180;
+const AI_MAX_CONTEXT_CHARS = 1200;
+const AI_MAX_OUTPUT_TOKENS = 120;
 const roomOwners = new Map();
 
 async function sendLog(guild, messageText) {
@@ -651,16 +649,12 @@ client.on('messageCreate', async (message) => {
   const botMention = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
   const isMentioned = botMention ? botMention.test(message.content) : false;
 
-  let isReplyToBot = false;
-  let referencedMessage = null;
-
-  if (message.reference && message.reference.messageId) {
-    referencedMessage = message.channel.messages.cache.get(message.reference.messageId)
-      || await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
-    if (referencedMessage && referencedMessage.author.id === client.user.id) {
-      isReplyToBot = true;
-    }
-  }
+  // Recent bot messages are already cached. Avoid an extra Discord API fetch
+  // on ordinary replies; explicit mentions still always trigger the AI.
+  const referencedMessage = message.reference?.messageId
+    ? message.channel.messages.cache.get(message.reference.messageId)
+    : null;
+  const isReplyToBot = referencedMessage?.author.id === client.user.id;
 
   if (isMentioned || isReplyToBot) {
     if (!genAI) return message.reply('Sme7 lia, AI mazal ma tf3elatch.');
@@ -701,7 +695,7 @@ Reply in casual Moroccan Darija (Darija written in Latin letters / Arabizi only;
 Use provided Discord tools when asked. For regular chit-chat, just answer directly.`;
 
     try {
-      const candidates = await getModelCandidates();
+      const candidates = getModelCandidates();
       let result = null;
       let chat = null;
 
@@ -724,6 +718,10 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
           console.warn(`[AI] Model ${candidate} failed (${err.message})`);
           if (err.message && err.message.includes('404')) {
             availableModelsCache = availableModelsCache.filter(m => m !== candidate);
+          } else {
+            // Retrying the same request on multiple models adds latency and
+            // can amplify quota/rate-limit errors. Only fall back for 404s.
+            break;
           }
         }
       }
