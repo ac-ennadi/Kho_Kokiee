@@ -14,8 +14,10 @@
     "@distube/soundcloud": "^2.0.0",
     "@distube/yt-dlp": "^2.0.1",
     "@google/generative-ai": "^0.24.1",
+    "@snazzah/davey": "^0.1.4",
     "discord.js": "^14.14.1",
     "distube": "^5.2.3",
-    "ffmpeg-static": "^5.2.0"
+    "ffmpeg-static": "^5.2.0",
+    "libsodium-wrappers": "^0.7.15"
   }
 }

@@ -65,8 +65,7 @@ const distube = DisTube
   ? new DisTube(client, {
       plugins: plugins,
       emitNewSongOnly: true,
-      // Pass ffmpeg path directly to guarantee it works on Railway without PATH issues
-      ffmpeg: { path: ffmpegPathString || 'ffmpeg' }
+      ffmpeg: { path: ffmpegPathString || 'ffmpeg' },
     })
   : null;
 
@@ -84,29 +83,38 @@ if (distube) {
   });
 
   distube.on('finish', (queue) => {
-    try { queue.voice.leave(); } catch (e) {}
+    setTimeout(() => {
+      const currentQueue = distube.getQueue(queue.id);
+      if (!currentQueue || !currentQueue.playing) {
+        try { queue.voice.leave(); } catch (e) {}
+      }
+    }, 15000);
   });
 
   distube.on('error', (error, queue) => {
-    console.error(`[Music] Error: ${error.message}`);
+    console.error('[Music] Full Error:', error);
     if (queue && queue.textChannel) {
-      queue.textChannel.send('❌ W9e3 error f l-music.').catch(() => {});
+      queue.textChannel.send(`❌ W9e3 error f l-music: \`${error.message}\``).catch(() => {});
     }
+  });
+
+  distube.on('debug', (msg) => {
+    console.log(`[Music Debug] ${msg}`);
   });
 }
 
 // Configuration IDs loaded securely from Railway Environment Variables
-const ROLE_ID = process.env.ROLE_ID;                    
-const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;               
-const TARGET_VC_ID = process.env.TARGET_VC_ID;              
-const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;                  
-const MOVE_ROLE_ID = process.env.MOVE_ROLE_ID;                        
-const CATEGORY_ID = process.env.CATEGORY_ID || null;                  
-const CREATE_VC_ID = process.env.CREATE_VC_ID;                        
-const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;    
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null; 
+const ROLE_ID = process.env.ROLE_ID;
+const NOT_VERIFIED_ROLE_ID = process.env.NOT_VERIFIED_ROLE_ID;
+const TARGET_VC_ID = process.env.TARGET_VC_ID;
+const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID;
+const MOVE_ROLE_ID = process.env.MOVE_ROLE_ID;
+const CATEGORY_ID = process.env.CATEGORY_ID || null;
+const CREATE_VC_ID = process.env.CREATE_VC_ID;
+const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
 
-// Google Gemini AI setup (100% Free tier on Google AI Studio)
+// Google Gemini AI setup
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 let activeGeminiModel = process.env.GEMINI_MODEL || null;
 let genAI = null;
@@ -129,7 +137,6 @@ async function getAvailableGeminiModel() {
 
       console.log('Available Gemini models for this key:', models);
 
-      // Prioritized list of active free-tier models
       const priority = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-flash'];
       for (const pref of priority) {
         if (models.includes(pref)) {
@@ -192,7 +199,14 @@ async function startVerification(guild, member) {
       { id: member.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak] },
       {
         id: client.user.id,
-        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels],
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.Connect,
+          PermissionsBitField.Flags.Speak,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ReadMessageHistory,
+          PermissionsBitField.Flags.ManageChannels,
+        ],
       },
     ];
 
@@ -200,7 +214,13 @@ async function startVerification(guild, member) {
     if (staffRole) {
       overwrites.push({
         id: staffRole.id,
-        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.Connect,
+          PermissionsBitField.Flags.Speak,
+          PermissionsBitField.Flags.SendMessages,
+          PermissionsBitField.Flags.ReadMessageHistory,
+        ],
       });
     }
 
@@ -211,22 +231,18 @@ async function startVerification(guild, member) {
       permissionOverwrites: overwrites,
     });
 
-    // Move the member in if they are already connected
     if (member.voice && member.voice.channelId) {
       await member.voice.setChannel(newChannel).catch(() => {});
     }
 
-    // The bot talks to the person who wants to verify
     try {
       await newChannel.send(`👋 Salam <@${member.id}>! Daba ghadi yjiw staff bach yverify-iwk. Stenna chwia hna 🙂`);
     } catch (e) {}
 
-    // Ping staff to come verify
     try {
       await newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session for **${member.displayName}**. Please come verify them here!`);
     } catch (e) {}
 
-    // Also DM the person as a heads-up
     try {
       await member.send(`👋 Salam ${member.displayName}! 3ayetna l staff bach yverify-iwk. Dkhol l <#${newChannel.id}> daba 🙂`);
     } catch (e) {}
@@ -241,7 +257,7 @@ async function startVerification(guild, member) {
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
   if (!GEMINI_API_KEY) {
-    console.log("⚠️ GEMINI_API_KEY is missing. Mention-based AI replies will be disabled.");
+    console.log('⚠️ GEMINI_API_KEY is missing. Mention-based AI replies will be disabled.');
   } else {
     const selectedModel = await getAvailableGeminiModel();
     console.log(`🤖 Gemini AI ready with model: ${selectedModel}`);
@@ -265,7 +281,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (oldMember.nickname !== newMember.nickname) {
     const oldName = oldMember.nickname || oldMember.user.username;
     const newName = newMember.nickname || newMember.user.username;
-    
+
     let executorString = `<@${newMember.id}> (Self-changed)`;
 
     try {
@@ -286,7 +302,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 
 // 3. Handle voice channel workflows, cleanup, and voice moderation logs
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  
   // A. LOGGING VOICE MOVES
   if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
     let executorString = `<@${newState.member.id}> (Self-moved)`;
@@ -305,14 +320,14 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
   // B. LOGGING SERVER MUTE AND DEAFEN
   if (oldState.serverMute !== newState.serverMute || oldState.serverDeaf !== newState.serverDeaf) {
-    let action = "";
-    if (!oldState.serverMute && newState.serverMute) action = "server muted";
-    else if (oldState.serverMute && !newState.serverMute) action = "server unmuted";
-    else if (!oldState.serverDeaf && newState.serverDeaf) action = "server deafened";
-    else if (oldState.serverDeaf && !newState.serverDeaf) action = "server undeafened";
+    let action = '';
+    if (!oldState.serverMute && newState.serverMute) action = 'server muted';
+    else if (oldState.serverMute && !newState.serverMute) action = 'server unmuted';
+    else if (!oldState.serverDeaf && newState.serverDeaf) action = 'server deafened';
+    else if (oldState.serverDeaf && !newState.serverDeaf) action = 'server undeafened';
 
     if (action) {
-      let executorString = "A moderator";
+      let executorString = 'A moderator';
       try {
         const fetchedLogs = await newState.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberUpdate });
         const updateLog = fetchedLogs.entries.first();
@@ -346,7 +361,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       } catch (err) {
         console.error(`[Cleanup] Failed to delete "${channel.name}" (ManageChannels=${canManage}, ViewChannel=${canView}): ${err.message}`);
         await sendLog(channel.guild, `⚠️ **Cleanup Failed:** \`${channel.name}\` — ${err.message} (bot has ManageChannels: ${canManage}).`).catch(() => {});
-        // Retry once shortly after (handles rare races / permission propagation)
         setTimeout(async () => {
           try {
             const ch = channel.guild.channels.cache.get(channel.id);
@@ -369,13 +383,26 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       const guild = newState.guild;
       const customOverwrites = [
         {
-          id: member.id, 
-          allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory],
+          id: member.id,
+          allow: [
+            PermissionsBitField.Flags.ManageChannels,
+            PermissionsBitField.Flags.Connect,
+            PermissionsBitField.Flags.Speak,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory,
+          ],
         },
         {
           id: client.user.id,
-          allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels],
-        }
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.Connect,
+            PermissionsBitField.Flags.Speak,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory,
+            PermissionsBitField.Flags.ManageChannels,
+          ],
+        },
       ];
 
       if (NOT_VERIFIED_ROLE_ID) {
@@ -418,7 +445,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     await startVerification(newState.guild, member);
   }
 });
-
 
 // ==========================================
 // AI MODERATION & VOICE TOOLS DEFINITION
@@ -464,7 +490,7 @@ const discordTools = [
       },
       {
         name: 'mute_member',
-        description: 'Mutes a member\'s microphone in their voice channel (Voice Mute only. Does NOT kick, does NOT timeout, does NOT remove roles, and does NOT lock channels).',
+        description: "Mutes a member's microphone in their voice channel (Voice Mute only. Does NOT kick, does NOT timeout, does NOT remove roles, and does NOT lock channels).",
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -928,8 +954,21 @@ function canCallerMove(caller) {
 async function executeDiscordTool(name, args, message) {
   const caller = message.member;
 
-  // Tools that don't operate on a single target user (no target_user lookup needed)
-  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
+  const noTargetTools = [
+    'create_channel',
+    'create_role',
+    'move_all_members',
+    'move_members',
+    'dm_members',
+    'start_verification',
+    'join_voice',
+    'play_music',
+    'skip_music',
+    'stop_music',
+    'leave_music',
+    'delete_channel',
+    'delete_role',
+  ];
 
   let targetMember = null;
   if (!noTargetTools.includes(name)) {
@@ -977,7 +1016,7 @@ async function executeDiscordTool(name, args, message) {
     if (ROLE_ID && role.id === ROLE_ID) {
       return {
         success: false,
-        error: "Cannot remove the main server membership role. Doing so would lock the user out of the server.",
+        error: 'Cannot remove the main server membership role. Doing so would lock the user out of the server.',
       };
     }
 
@@ -999,7 +1038,7 @@ async function executeDiscordTool(name, args, message) {
     }
   }
 
-  // 3. MUTE MEMBER (Strictly Voice Mute - No timeouts, no kicks, no locked channels)
+  // 3. MUTE MEMBER
   if (name === 'mute_member') {
     if (!canCallerModerate(caller)) {
       return {
@@ -1016,7 +1055,6 @@ async function executeDiscordTool(name, args, message) {
       return { success: false, error: 'Cannot mute an Administrator.' };
     }
 
-    // Must be in a voice channel to voice-mute
     if (!targetMember.voice.channel) {
       return {
         success: false,
@@ -1025,7 +1063,6 @@ async function executeDiscordTool(name, args, message) {
     }
 
     try {
-      // Pure voice mute: mutes mic without kicking, without timeout, and without touching server roles
       await targetMember.voice.setMute(true, args.reason || `Voice muted via AI by ${caller.displayName}`);
       await sendLog(message.guild, `🔇 **AI Voice Mute:** <@${caller.id}> muted <@${targetMember.id}> in \`${targetMember.voice.channel.name}\`.`);
       return {
@@ -1367,7 +1404,7 @@ async function executeDiscordTool(name, args, message) {
     return { success: true, sent, errors };
   }
 
-  // 14. START VERIFICATION (tag staff + talk to the person)
+  // 14. START VERIFICATION
   if (name === 'start_verification') {
     let target = caller;
 
@@ -1389,7 +1426,7 @@ async function executeDiscordTool(name, args, message) {
     return await startVerification(message.guild, target);
   }
 
-  // 15. MUSIC CONTROL — kho Kokiee plays/controls music directly via distube
+  // 15. MUSIC CONTROL
   if (name === 'join_voice') {
     if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
     let channel = caller.voice.channel;
@@ -1410,7 +1447,6 @@ async function executeDiscordTool(name, args, message) {
     const query = (args.query || '').trim();
     if (!query) return { success: false, error: 'A song query is required.' };
     if (!distube) return { success: false, error: 'Music is not available (dependencies missing).' };
-    // Play in the caller's channel, or the bot's current channel if the caller isn't in one
     const targetChannel = caller.voice.channel || message.guild.members.me.voice.channel;
     if (!targetChannel) return { success: false, error: 'You must be in a voice channel (or I must be connected) to play music.' };
     try {
@@ -1527,7 +1563,6 @@ async function executeDiscordTool(name, args, message) {
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  // AI replies when directly mentioned OR when someone replies to the bot's message
   const botMention = client.user ? new RegExp(`<@!?${client.user.id}>`, 'g') : null;
   const isMentioned = botMention ? botMention.test(message.content) : false;
 
@@ -1563,16 +1598,19 @@ client.on('messageCreate', async (message) => {
       const recentMessages = await message.channel.messages.fetch({ limit: 10, before: message.id }).catch(() => null);
       if (recentMessages && recentMessages.size > 0) {
         const chronological = Array.from(recentMessages.values())
-          .filter(m => !m.author.bot || m.author.id === client.user.id) // Only users and this bot
-          .filter(m => (Date.now() - m.createdTimestamp) < 30 * 60 * 1000) // Within last 30 minutes
-          .reverse(); // Chronological order
+          .filter(m => !m.author.bot || m.author.id === client.user.id)
+          .filter(m => (Date.now() - m.createdTimestamp) < 30 * 60 * 1000)
+          .reverse();
 
         if (chronological.length > 0) {
-          channelContext = chronological.map(m => {
-            const sender = m.author.id === client.user.id ? 'kho Kokiee (Bot)' : (m.member?.displayName || m.author.username);
-            const cleanContent = botMention ? m.content.replace(botMention, '').trim() : m.content.trim();
-            return `[${sender}]: ${cleanContent}`;
-          }).filter(line => line.trim().length > 0).join('\n');
+          channelContext = chronological
+            .map(m => {
+              const sender = m.author.id === client.user.id ? 'kho Kokiee (Bot)' : (m.member?.displayName || m.author.username);
+              const cleanContent = botMention ? m.content.replace(botMention, '').trim() : m.content.trim();
+              return `[${sender}]: ${cleanContent}`;
+            })
+            .filter(line => line.trim().length > 0)
+            .join('\n');
         }
       }
     } catch (contextErr) {
@@ -1625,7 +1663,7 @@ client.on('messageCreate', async (message) => {
       await message.channel.sendTyping();
       const modelName = await getAvailableGeminiModel();
       console.log(`[AI] Processing query from ${callerName} (${message.author.tag}): "${promptText}" using ${modelName}`);
-      
+
       const model = genAI.getGenerativeModel({
         model: modelName,
         systemInstruction: `You are "kho Kokiee", a helpful, witty, and powerful Discord community assistant bot.
@@ -1637,53 +1675,32 @@ When recent channel history is provided in the prompt, use it to track who said 
 
 You have Discord moderation tools:
 - give_role: Call this tool if someone asks to give/assign a role to someone (e.g. "3tih role Member", "give @User role VIP", "3ti role l @User").
-
 - remove_role: Call this tool if someone asks to remove/take away a role from someone (e.g. "7eyed role VIP mn @User", "remove role from @User").
-
 - mute_member: Call this tool if someone asks to mute, silence, or timeout a user (e.g. "sket @user", "mute @user", "sket hada", "kmih @user").
-
 - unmute_member: Call this tool if someone asks to unmute a user (e.g. "telqo @user", "unmute @user", "tle9 l-user").
-
 - move_member: Call this tool if someone asks to pull, move, or bring a user to voice (e.g. "jib @user", "jbed @user", "aji @user", "move @user l voice").
-
 - disconnect_member: Call this tool if someone asks to disconnect or kick someone from voice (e.g. "kherrej @user mn voice", "disconnect @user").
-
 - deafen_member: Call this tool if someone asks to deafen a user in voice (e.g. "sdem @user", "deafen @user").
-
 - undeafen_member: Call this tool if someone asks to undeafen a user in voice (e.g. "7eyed sdem l @user", "undeafen @user").
-
 - create_channel: Call this tool if someone asks to create a channel (e.g. "dir channel smito General", "create a voice channel named Gaming", "sawb channel voice").
-
 - create_role: Call this tool if someone asks to create a role (e.g. "dir role smito VIP", "create role Member", "sawb role Admin").
-
 - move_all_members: Call this tool if someone asks to move EVERYONE in a voice channel to another channel (e.g. "7rekk ga3 li f channel X l channel Y", "move everyone to my channel", "jib ga3 li f l-voice l hna").
-
 - move_members: Call this tool if someone asks to move several specific people to a voice channel (e.g. "jbed @A w @B l hna", "move @A and @B to my channel", "jib @A, @B l voice").
-
 - dm_members: Call this tool if someone asks to send a private message to one or more people (e.g. "sift l @User f privé: salam", "dm @A and @B the rules").
-
 - start_verification: Call this tool if someone asks to verify, or asks to call/tag staff to verify them (e.g. "bghit nverify", "3ayet l staff yverify-iw", "call staff to verify me").
-
 - join_voice: Call this tool if someone asks you to join a voice channel (e.g. "join the vc", "dkhoul l voice", "aji l voice", "join the call").
-
 - play_music: Call this tool if someone asks to play a song/music (e.g. "play the music", "play some chill music", "3zef chi song", "diro chi 7aja").
-
 - skip_music: Call this tool if someone asks to skip or change the song (e.g. "skip", "change it", "baddel l-ghnya", "dozi l-li moraha").
-
 - stop_music: Call this tool if someone asks to stop the music (e.g. "stop l-music", "w9ef l-music").
-
 - leave_music: Call this tool if someone asks you to leave the voice channel (e.g. "leave", "kherrej mn l voice", "leave voice").
-
 - delete_channel: Call this tool if someone asks to delete a channel (e.g. "ms7 channel X", "delete channel #general", "7eyed channel smito Y").
-
 - delete_role: Call this tool if someone asks to delete a role (e.g. "ms7 role VIP", "delete role Member", "7eyed role smito X").
-
 
 MULTI-STEP TASKS:
 You can perform several actions in a single request. When the user asks for multiple things at once (e.g. "disconnect @user, then create a voice channel, then mute @user"), call the needed tools one after another. After each tool result, decide whether another tool is still needed and call it. Only give the final Darija summary once ALL requested actions are done.
 
 For regular chit-chat, answer questions directly in Moroccan Darija without calling tools.
-When all tools have returned, summarize every successful action happily in 1-2 short Moroccan Darija sentences. If any action failed or was not allowed, return no text at all (stay completely silent).`,
+When all tools have returned, summarize every successful action happily in 1-2 short Moroccan Darija sentences. If any action failed or was not allowed, explain briefly in Moroccan Darija why it couldn't be done.`,
         tools: discordTools,
       });
 
@@ -1700,10 +1717,8 @@ When all tools have returned, summarize every successful action happily in 1-2 s
       let responseText = '';
 
       const MAX_TOOL_ROUNDS = 6;
-      const executedTools = []; // { name, result } for fallback summary
+      const executedTools = [];
 
-      // Loop to support chained multi-step tasks: keep executing tool calls until
-      // the model stops requesting them (e.g. "disconnect @user, create a channel, mute them")
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const functionCalls = result.response.functionCalls();
         if (!functionCalls || functionCalls.length === 0) {
@@ -1711,78 +1726,95 @@ When all tools have returned, summarize every successful action happily in 1-2 s
           break;
         }
 
-        // Execute every tool the model requested this round
         const functionResponses = [];
-        const textFallback = []; // Added to bypass older SDK role bugs
+        const textFallback = [];
         for (const call of functionCalls) {
           console.log(`[AI Tool] Model requested ${call.name} with args:`, call.args);
           const toolResult = await executeDiscordTool(call.name, call.args, message);
           console.log(`[AI Tool] Execution result:`, toolResult);
           executedTools.push({ name: call.name, result: toolResult });
-          
+
           functionResponses.push({
             functionResponse: {
               name: call.name,
               response: toolResult,
             },
           });
-          // Create a text-based version of the tool result just in case
           textFallback.push(`[System: Tool '${call.name}' returned: ${JSON.stringify(toolResult)}]`);
         }
 
         try {
-          // Attempt native tool response first
           result = await chat.sendMessage(functionResponses);
         } catch (apiErr) {
-          // If the SDK uses the outdated 'function' role and gets a 400 error, fallback to plain text
-          if (apiErr.message.includes("Role 'function' is not supported") || apiErr.message.includes("400")) {
-            console.log(`[AI Tool] Bypassing SDK role bug by sending results as text...`);
+          if (apiErr.message.includes("Role 'function' is not supported") || apiErr.message.includes('400')) {
+            console.log('[AI Tool] Bypassing SDK role bug by sending results as text...');
             result = await chat.sendMessage(textFallback.join('\n'));
           } else {
             throw apiErr;
           }
         }
-        
+
         responseText = extractResponseText(result.response);
       }
 
-      // If an action failed, log it, but DO NOT stop the bot from replying!
       const failedTools = executedTools.filter(t => t.result && t.result.success === false);
       if (failedTools.length > 0) {
-        console.warn(`[AI] Action(s) failed:`, failedTools.map(f => `${f.name}: ${f.result.error}`).join(' | '));
+        console.warn('[AI] Action(s) failed:', failedTools.map(f => `${f.name}: ${f.result.error}`).join(' | '));
         await sendLog(message.guild, `⚠️ **AI Action Failed:** <@${message.author.id}> — ${failedTools.map(f => `\`${f.name}\`: ${f.result.error}`).join(' | ')}`);
-        // Intentionally no 'return;' here so the bot still replies to the user in Darija saying it failed.
       }
 
-      // Fallback: if Gemini produced no final text, build a Darija summary of executed tools
       if (!responseText && executedTools.length > 0) {
-        responseText = executedTools.map(({ name, result: r }) => {
-          if (!r || r.success === false) return `Ma qdertch ndir **${name}**: ${r?.error || 'unknown error'}`;
-          switch (name) {
-            case 'give_role': return `Safi a khay, 3tit role **${r.role}** l ${r.mention || r.user} ✅`;
-            case 'remove_role': return `Safi 7eyedt role **${r.role}** mn ${r.mention || r.user} ✅`;
-            case 'mute_member': return `Safi a khay, sket ${r.mention || r.user} f l-voice 👍`;
-            case 'unmute_member': return `Safi telqt ${r.mention || r.user} 👍`;
-            case 'move_member': return `Hani jbedt ${r.mention || r.user} l ${r.channel} 😉`;
-            case 'disconnect_member': return `Safi kherrejt ${r.mention || r.user} mn l voice 🚪`;
-            case 'deafen_member': return `Safi sdemt ${r.mention || r.user} f voice 🔇`;
-            case 'undeafen_member': return `Safi 7eyedt sdem l ${r.mention || r.user} 🔊`;
-            case 'move_all_members': return `Safi 7rekkt **${r.moved}** members mn \`${r.source}\` l \`${r.dest}\` 🧲`;
-            case 'create_channel': return `Safi creatit ${r.type === 'voice' ? 'voice' : 'text'} channel ${r.mention || r.name} ✅`;
-            case 'create_role': return `Safi creatit role ${r.mention || r.name} ✅`;
-            case 'move_members': return `Safi jbedt **${r.moved}** members l \`${r.dest}\` 🧲`;
-            case 'dm_members': return `Safi sift message f privé l **${r.sent}** members 📩`;
-            case 'start_verification': return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
-            case 'join_voice': return `Safi dkhalt l voice \`${r.channel}\` 🔊`;
-            case 'play_music': return `Safi bda kayn-playi \`${r.query}\` 🎶`;
-            case 'skip_music': return `Safi skipt l-ghnya ⏭️`;
-            case 'stop_music': return `Safi w9eft l-music ⏹️`;
-            case 'leave_music': return `Safi kherrejt mn l voice 👋`;
-            case 'delete_channel': return `Safi ms7t channel \`${r.name}\` 🗑️`;
-            case 'delete_role': return `Safi ms7t role \`${r.name}\` 🗑️`;
-            default: return `Safi t-dar l-action **${name}** ✅`;
-          }
-        }).join('\n');
+        responseText = executedTools
+          .map(({ name, result: r }) => {
+            if (!r || r.success === false) return `Ma qdertch ndir **${name}**: ${r?.error || 'unknown error'}`;
+            switch (name) {
+              case 'give_role':
+                return `Safi a khay, 3tit role **${r.role}** l ${r.mention || r.user} ✅`;
+              case 'remove_role':
+                return `Safi 7eyedt role **${r.role}** mn ${r.mention || r.user} ✅`;
+              case 'mute_member':
+                return `Safi a khay, sket ${r.mention || r.user} f l-voice 👍`;
+              case 'unmute_member':
+                return `Safi telqt ${r.mention || r.user} 👍`;
+              case 'move_member':
+                return `Hani jbedt ${r.mention || r.user} l ${r.channel} 😉`;
+              case 'disconnect_member':
+                return `Safi kherrejt ${r.mention || r.user} mn l voice 🚪`;
+              case 'deafen_member':
+                return `Safi sdemt ${r.mention || r.user} f voice 🔇`;
+              case 'undeafen_member':
+                return `Safi 7eyedt sdem l ${r.mention || r.user} 🔊`;
+              case 'move_all_members':
+                return `Safi 7rekkt **${r.moved}** members mn \`${r.source}\` l \`${r.dest}\` 🧲`;
+              case 'create_channel':
+                return `Safi creatit ${r.type === 'voice' ? 'voice' : 'text'} channel ${r.mention || r.name} ✅`;
+              case 'create_role':
+                return `Safi creatit role ${r.mention || r.name} ✅`;
+              case 'move_members':
+                return `Safi jbedt **${r.moved}** members l \`${r.dest}\` 🧲`;
+              case 'dm_members':
+                return `Safi sift message f privé l **${r.sent}** members 📩`;
+              case 'start_verification':
+                return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
+              case 'join_voice':
+                return `Safi dkhalt l voice \`${r.channel}\` 🔊`;
+              case 'play_music':
+                return `Safi bda kayn-playi \`${r.query}\` 🎶`;
+              case 'skip_music':
+                return `Safi skipt l-ghnya ⏭️`;
+              case 'stop_music':
+                return `Safi w9eft l-music ⏹️`;
+              case 'leave_music':
+                return `Safi kherrejt mn l voice 👋`;
+              case 'delete_channel':
+                return `Safi ms7t channel \`${r.name}\` 🗑️`;
+              case 'delete_role':
+                return `Safi ms7t role \`${r.name}\` 🗑️`;
+              default:
+                return `Safi t-dar l-action **${name}** ✅`;
+            }
+          })
+          .join('\n');
       }
 
       if (!responseText) throw new Error('Gemini returned an empty response');
@@ -1801,7 +1833,6 @@ When all tools have returned, summarize every successful action happily in 1-2 s
         activeGeminiModel = null;
       }
       aiUserCooldowns.delete(message.author.id);
-      // Stay silent on errors — send nothing to chat (log only)
     }
     return;
   }
@@ -1902,8 +1933,8 @@ When all tools have returned, summarize every successful action happily in 1-2 s
     if (!broadcastText) return;
 
     try {
-      await message.delete(); 
-      await message.channel.send(broadcastText); 
+      await message.delete();
+      await message.channel.send(broadcastText);
       await sendLog(message.guild, `📢 **Broadcast:** <@${message.author.id}> used the \`.say\` command in <#${message.channel.id}>.`);
     } catch (err) {}
     return;
@@ -1914,7 +1945,7 @@ When all tools have returned, summarize every successful action happily in 1-2 s
   const args = message.content.slice(2).trim().split(/ +/);
   const command = args.shift().toLowerCase();
   const voiceChannel = message.member?.voice?.channel;
-  
+
   if (!voiceChannel) return message.reply('❌ You must be connected to a voice channel to use room commands.');
 
   // CLAIM COMMAND
@@ -1925,7 +1956,13 @@ When all tools have returned, summarize every successful action happily in 1-2 s
     }
     try {
       roomOwners.set(voiceChannel.id, message.author.id);
-      await voiceChannel.permissionOverwrites.edit(message.author.id, { ManageChannels: true, Connect: true, Speak: true, SendMessages: true, ReadMessageHistory: true });
+      await voiceChannel.permissionOverwrites.edit(message.author.id, {
+        ManageChannels: true,
+        Connect: true,
+        Speak: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+      });
       await sendLog(message.guild, `🔑 **Room Claimed:** <@${message.author.id}> reclaimed ownership of \`${voiceChannel.name}\`.`);
       return message.reply('✅ You have successfully reclaimed ownership of this room! You can use `.a` commands again.');
     } catch (err) {
@@ -1945,32 +1982,27 @@ When all tools have returned, summarize every successful action happily in 1-2 s
       if (!newName) return message.reply('❌ Please provide a new name.');
       await voiceChannel.setName(`🔊 ${newName}`);
       await message.reply(`✅ Room renamed to **🔊 ${newName}**`);
-    } 
-    else if (command === 'lock') {
+    } else if (command === 'lock') {
       await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: false });
       await message.reply('🔒 Room locked.');
-    } 
-    else if (command === 'unlock') {
+    } else if (command === 'unlock') {
       await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: null });
       await message.reply('🔓 Room unlocked.');
-    } 
-    else if (command === 'limit') {
+    } else if (command === 'limit') {
       const limit = parseInt(args[0], 10);
       if (isNaN(limit) || limit < 0 || limit > 99) return message.reply('❌ Please provide a valid number between 0 and 99.');
       await voiceChannel.setUserLimit(limit);
       await message.reply(limit === 0 ? '✅ Room user limit removed.' : `✅ Room limit set to **${limit}** users.`);
-    }
-    else if (command === 'add' || command === 'permit') {
+    } else if (command === 'add' || command === 'permit') {
       const targetUser = message.mentions.users.first();
       if (!targetUser) return message.reply('❌ Please mention a user to add.');
       await voiceChannel.permissionOverwrites.edit(targetUser.id, { Connect: true, ViewChannel: true, Speak: true });
       await message.reply(`✅ Added ${targetUser} to your room.`);
-    } 
-    else if (command === 'reject') {
+    } else if (command === 'reject') {
       const targetUser = message.mentions.users.first();
       if (!targetUser) return message.reply('❌ Please mention a user to reject.');
       await voiceChannel.permissionOverwrites.edit(targetUser.id, { Connect: false });
-      
+
       const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
       if (targetMember && targetMember.voice.channelId === voiceChannel.id) await targetMember.voice.disconnect();
       await message.reply(`🚫 Rejected ${targetUser} from your room.`);
