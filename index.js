@@ -1,18 +1,28 @@
+const fs = require('fs');
 const { Client, GatewayIntentBits, ActivityType, ChannelType, PermissionsBitField, AuditLogEvent } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// Put bundled ffmpeg (ffmpeg-static) on PATH so yt-dlp / distube can use it
-let ffmpegPathString = null;
 try {
-  ffmpegPathString = require('ffmpeg-static');
-  if (ffmpegPathString) {
-    const path = require('path');
-    const ffmpegDir = path.dirname(ffmpegPathString);
-    process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}`;
-    console.log(`[Music] Bundled ffmpeg ready: ${ffmpegPathString}`);
-  }
+  const { generateDependencyReport } = require('@discordjs/voice');
+  console.log('[Voice Dependencies]\n' + generateDependencyReport());
 } catch (e) {
-  console.warn(`[Music] ffmpeg-static unavailable: ${e.message}`);
+  console.warn(`[Voice] Could not generate dependency report: ${e.message}`);
+}
+
+// Prefer system ffmpeg (installed in Docker) and fallback to ffmpeg-static
+let ffmpegPathString = fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : null;
+if (!ffmpegPathString) {
+  try {
+    ffmpegPathString = require('ffmpeg-static');
+  } catch (e) {
+    console.warn(`[Music] ffmpeg-static unavailable: ${e.message}`);
+  }
+}
+if (ffmpegPathString) {
+  const path = require('path');
+  const ffmpegDir = path.dirname(ffmpegPathString);
+  process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}`;
+  console.log(`[Music] FFmpeg ready: ${ffmpegPathString}`);
 }
 
 // Music (optional): Separated try/catch blocks so one missing plugin doesn't break everything
@@ -29,7 +39,7 @@ try {
 try {
   YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin;
 } catch (e) {
-  console.warn(`[Music] @distube/yt-dlp not installed (will fallback to default ytdl): ${e.message}`);
+  console.warn(`[Music] @distube/yt-dlp not installed: ${e.message}`);
 }
 
 try {
@@ -96,6 +106,10 @@ if (distube) {
     if (queue && queue.textChannel) {
       queue.textChannel.send(`❌ W9e3 error f l-music: \`${error.message}\``).catch(() => {});
     }
+  });
+
+  distube.on('ffmpegDebug', (debug) => {
+    console.log(`[FFmpeg Debug] ${debug}`);
   });
 
   distube.on('debug', (msg) => {
