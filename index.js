@@ -227,6 +227,32 @@ async function startVerification(guild, member) {
   }
 }
 
+async function createPersonalVoiceRoom(guild, member) {
+  const safeName = (member.displayName || member.user.username).replace(/[\r\n]/g, ' ').slice(0, 75);
+  const overwrites = [
+    { id: member.id, allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages] },
+    { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.ManageChannels] },
+  ];
+  if (NOT_VERIFIED_ROLE_ID) overwrites.push({ id: NOT_VERIFIED_ROLE_ID, deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect] });
+
+  const channel = await guild.channels.create({
+    name: `🔊 ${safeName}'s Room`,
+    type: ChannelType.GuildVoice,
+    parent: (CREATE_CATEGORY_ID && CREATE_CATEGORY_ID.length > 5) ? CREATE_CATEGORY_ID : null,
+    permissionOverwrites: overwrites,
+  });
+  roomOwners.set(channel.id, member.id);
+  try {
+    await member.voice.setChannel(channel);
+  } catch (error) {
+    roomOwners.delete(channel.id);
+    await channel.delete().catch(() => {});
+    throw error;
+  }
+  sendLog(guild, `🎙️ **Room Created:** <@${member.id}> created a custom voice channel (\`${channel.name}\`).`).catch(() => {});
+  return channel;
+}
+
 client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}! Bot is online and ready.`);
   if (!GEMINI_API_KEY) console.log('⚠️ GEMINI_API_KEY is missing. AI replies disabled.');
@@ -300,22 +326,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (CREATE_VC_ID && newState.channelId === CREATE_VC_ID && oldState.channelId !== CREATE_VC_ID) {
     const member = newState.member;
     try {
-      const customOverwrites = [
-        { id: member.id, allow: [PermissionsBitField.Flags.ManageChannels, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.SendMessages] },
-        { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect, PermissionsBitField.Flags.Speak, PermissionsBitField.Flags.ManageChannels] },
-      ];
-      if (NOT_VERIFIED_ROLE_ID) customOverwrites.push({ id: NOT_VERIFIED_ROLE_ID, deny: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.Connect] });
-
-      const customChannel = await newState.guild.channels.create({
-        name: `🔊 ${member.displayName}'s Room`,
-        type: ChannelType.GuildVoice,
-        parent: (CREATE_CATEGORY_ID && CREATE_CATEGORY_ID.length > 5) ? CREATE_CATEGORY_ID : null,
-        permissionOverwrites: customOverwrites,
-      });
-
-      roomOwners.set(customChannel.id, member.id);
-      await member.voice.setChannel(customChannel);
-      sendLog(newState.guild, `🎙️ **Room Created:** <@${member.id}> created a custom voice channel (\`${customChannel.name}\`).`).catch(() => {});
+      const customChannel = await createPersonalVoiceRoom(newState.guild, member);
       setTimeout(() => {
         customChannel.send(`👋 Welcome to your room, <@${member.id}>!\nUse \`.a name <new name>\`, \`.a lock\`, \`.a unlock\`, \`.a limit <number>\`, \`.a add @User\`, \`.a reject @User\``).catch(() => {});
       }, 1000);
@@ -342,6 +353,8 @@ const discordTools = [{
     { name: 'deafen_member', description: 'Server deafens a user.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } }, required: ['target_user'] } },
     { name: 'undeafen_member', description: 'Undeafens a user.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } }, required: ['target_user'] } },
     { name: 'create_channel', description: 'Creates a channel.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' }, type: { type: 'STRING' } }, required: ['name'] } },
+    { name: 'manage_current_channel', description: 'Locks or opens the current text channel, or the caller-owned temporary voice room. Use scope text for chat channels and voice for a voice room. Only act when the user clearly asks to lock/close or open/unlock it.', parameters: { type: 'OBJECT', properties: { action: { type: 'STRING', enum: ['lock', 'unlock'] }, scope: { type: 'STRING', enum: ['text', 'voice'] } }, required: ['action', 'scope'] } },
+    { name: 'create_personal_voice_room', description: 'Creates a new personal temporary voice room for the person asking and moves them into it. Use when they ask for a new voice room/channel for themselves.', parameters: { type: 'OBJECT', properties: {} } },
     { name: 'create_role', description: 'Creates a role.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' } }, required: ['name'] } },
     { name: 'move_all_members', description: 'Moves everyone from the named source voice channel to the named destination voice channel (or the caller voice channel when destination is "here").', parameters: { type: 'OBJECT', properties: { source_channel: { type: 'STRING' }, destination_channel: { type: 'STRING' } }, required: ['source_channel', 'destination_channel'] } },
     { name: 'move_members', description: 'Moves specific multiple users.', parameters: { type: 'OBJECT', properties: { target_users: { type: 'STRING' }, destination: { type: 'STRING' } }, required: ['target_users'] } },
@@ -439,6 +452,10 @@ function formatToolSummary(executedTools) {
         case 'start_verification': return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
         case 'join_voice': return `Safi dkhalt l voice \`${r.channel}\` 🔊`;
         case 'play_music': return `Safi bda kayn-playi \`${r.query}\` 🎶`;
+        case 'manage_current_channel': return r.scope === 'voice'
+          ? `Safi ${r.action === 'lock' ? 'seddt' : '7ellit'} voice room \`${r.channel}\` ${r.action === 'lock' ? '🔒' : '🔓'}`
+          : `Safi ${r.action === 'lock' ? 'seddt' : '7ellit'} text channel <#${r.channelId || ''}> ${r.action === 'lock' ? '🔒' : '🔓'}`;
+        case 'create_personal_voice_room': return `Safi swebt lik room jdida ${r.mention} w 7rektek liha 🔊`;
         case 'skip_music': return `Safi skipt l-ghnya ⏭️`;
         case 'stop_music': return `Safi w9eft l-music ⏹️`;
         case 'leave_music': return `Safi kherrejt mn l voice 👋`;
@@ -480,7 +497,7 @@ function canManageRoles(caller) {
 
 async function executeDiscordTool(name, args, message) {
   const caller = message.member;
-  const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
+  const noTargetTools = ['create_channel', 'manage_current_channel', 'create_personal_voice_room', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
 
   let targetMember = null;
   if (!noTargetTools.includes(name)) {
@@ -540,6 +557,40 @@ async function executeDiscordTool(name, args, message) {
   if (name === 'undeafen_member') {
     if (!canCallerModerate(caller) && !caller.permissions.has(PermissionsBitField.Flags.DeafenMembers)) return { success: false, error: 'Ma 3ndekch permission.' };
     try { await targetMember.voice.setDeaf(false); return { success: true, user: targetMember.displayName, mention: `<@${targetMember.id}>` }; } catch (err) { return { success: false, error: err.message }; }
+  }
+
+  if (name === 'manage_current_channel') {
+    const action = String(args.action || '').toLowerCase();
+    const scope = String(args.scope || 'text').toLowerCase();
+    if (!['lock', 'unlock'].includes(action)) return { success: false, error: 'Khas action ykon lock ola unlock.' };
+
+    if (scope === 'voice') {
+      const voiceChannel = caller.voice.channel;
+      if (!voiceChannel) return { success: false, error: 'Dkhol l voice room li bghiti t7kem fih.' };
+      const isRoomOwner = roomOwners.get(voiceChannel.id) === caller.id
+        || (voiceChannel.name.startsWith('🔊 ') && voiceChannel.permissionOverwrites.cache.get(caller.id)?.allow.has(PermissionsBitField.Flags.ManageChannels));
+      if (!isRoomOwner && !canManageChannels(caller)) return { success: false, error: 'T9der t7kem ghir f room dyalk, aw khassek permission dyal staff.' };
+      try {
+        await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: action === 'lock' ? false : null });
+        return { success: true, action, scope: 'voice', channel: voiceChannel.name };
+      } catch (err) { return { success: false, error: err.message }; }
+    }
+
+    if (!canManageChannels(caller)) return { success: false, error: 'Khassek permission dyal Manage Channels bach t7kem f text channel.' };
+    const textChannel = message.channel;
+    if (!textChannel.permissionOverwrites) return { success: false, error: 'Ma n9drch nlocki had no3 dyal channel.' };
+    try {
+      await textChannel.permissionOverwrites.edit(message.guild.id, { SendMessages: action === 'lock' ? false : null });
+      return { success: true, action, scope: 'text', channel: textChannel.name, channelId: textChannel.id };
+    } catch (err) { return { success: false, error: err.message }; }
+  }
+
+  if (name === 'create_personal_voice_room') {
+    if (!caller.voice.channel) return { success: false, error: 'Dkhol l chi voice channel lwl, bach n9der ndir lik room w n7rekek lih.' };
+    try {
+      const channel = await createPersonalVoiceRoom(message.guild, caller);
+      return { success: true, name: channel.name, mention: `<#${channel.id}>`, user: caller.displayName };
+    } catch (err) { return { success: false, error: err.message }; }
   }
 
   if (name === 'create_channel') {
@@ -722,6 +773,7 @@ client.on('messageCreate', async (message) => {
 Always reply in Moroccan Darija written with Latin letters/Arabizi (like "salam cv", "a sat", "wa3er"); never use Arabic script. Sound casual and human, not formal or robotic. Keep normal replies short (usually 1-2 sentences), use a quick joke when it fits, and don't force jokes into serious conversations.
 Be charming and use light, respectful flirting only when the other person clearly invites that vibe. Never assume someone's gender, pressure them, or make sexual comments about real people.
 You may use casual Darija profanity sparingly as playful, situation-directed banter (for example, "sir t9wad" about a frustrating situation or your own mistake). Never direct insults, humiliation, slurs, or profanity at a server member; soften it if the context is unclear.
+When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel; use scope voice only when they explicitly mean their current voice room. Lock/open text channels only for members with Manage Channels/staff permission; voice-room owners can control their own room. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests.
 Use the provided Discord tools when asked to perform an action. For regular chat, answer directly.`;
 
     let streamedMessage = null;
