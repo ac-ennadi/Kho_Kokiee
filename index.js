@@ -48,13 +48,13 @@ try {
   console.warn(`[Music] @distube/soundcloud not installed: ${e.message}`);
 }
 
-// Music playback setup (distube v5 + yt-dlp + soundcloud)
+// Music playback setup: YtDlpPlugin must be the LAST plugin in the array
 const plugins = [];
-if (YtDlpPlugin) {
-  plugins.push(new YtDlpPlugin({ update: true }));
-}
 if (SoundCloudPlugin) {
   plugins.push(new SoundCloudPlugin());
+}
+if (YtDlpPlugin) {
+  plugins.push(new YtDlpPlugin({ update: false }));
 }
 
 const client = new Client({
@@ -120,7 +120,7 @@ const CREATE_VC_ID = process.env.CREATE_VC_ID;
 const CREATE_CATEGORY_ID = process.env.CREATE_CATEGORY_ID || null;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
 
-// Google Gemini AI setup with automatic fallback models on 503/429 spikes
+// Google Gemini AI setup with fast fallback across active Gemini 3 Flash models
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 let activeGeminiModel = process.env.GEMINI_MODEL || null;
 let availableModelsCache = [];
@@ -130,7 +130,7 @@ if (GEMINI_API_KEY) {
 }
 
 async function fetchSupportedModels() {
-  if (!GEMINI_API_KEY) return ['gemini-3.5-flash-lite'];
+  if (!GEMINI_API_KEY) return ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'];
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
     if (res.ok) {
@@ -140,34 +140,50 @@ async function fetchSupportedModels() {
         .map(m => m.name.replace(/^models\//, ''));
       if (models.length > 0) {
         availableModelsCache = models;
-        console.log('Available Gemini models for this key:', models);
         return models;
       }
     }
   } catch (e) {
     console.error(`Could not fetch model list: ${e.message}`);
   }
-  return ['gemini-3.5-flash-lite'];
+  return ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'];
 }
 
 async function getModelCandidates() {
   if (availableModelsCache.length === 0) {
     await fetchSupportedModels();
   }
+
+  const isValidChatFlash = (m) => {
+    const lower = m.toLowerCase();
+    return (
+      lower.includes('flash') &&
+      !lower.includes('tts') &&
+      !lower.includes('live') &&
+      !lower.includes('image') &&
+      !lower.includes('omni') &&
+      !lower.includes('transcribe') &&
+      !lower.includes('embedding') &&
+      !lower.includes('2.5') &&
+      !lower.includes('2.0') &&
+      !lower.includes('1.5')
+    );
+  };
+
   const preferredOrder = [
     activeGeminiModel,
     'gemini-3.5-flash-lite',
-    'gemini-2.5-flash-lite',
-    'gemini-2.5-flash',
+    'gemini-3.6-flash',
     'gemini-3.8-flash',
-    'gemini-2.0-flash',
-    ...availableModelsCache.filter(m => m.toLowerCase().includes('flash')),
-    ...availableModelsCache,
+    'gemini-3.1-flash-lite',
+    ...availableModelsCache.filter(isValidChatFlash),
   ].filter(Boolean);
 
-  return [...new Set(preferredOrder)].filter(
-    m => availableModelsCache.length === 0 || availableModelsCache.includes(m)
-  );
+  const unique = [...new Set(preferredOrder)];
+  if (availableModelsCache.length === 0) return unique;
+
+  const filtered = unique.filter(m => availableModelsCache.includes(m));
+  return filtered.length > 0 ? filtered : ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'];
 }
 
 async function getAvailableGeminiModel() {
@@ -179,9 +195,9 @@ async function getAvailableGeminiModel() {
 }
 
 const aiUserCooldowns = new Map();
-const AI_COOLDOWN_MS = 4000;
+const AI_COOLDOWN_MS = 3000;
 const AI_MAX_QUESTION_CHARS = 1500;
-const AI_MAX_OUTPUT_TOKENS = 800;
+const AI_MAX_OUTPUT_TOKENS = 400;
 
 // In-memory tracker to remember who owns which custom voice channel { channelId: userId }
 const roomOwners = new Map();
@@ -246,17 +262,9 @@ async function startVerification(guild, member) {
       await member.voice.setChannel(newChannel).catch(() => {});
     }
 
-    try {
-      await newChannel.send(`👋 Salam <@${member.id}>! Daba ghadi yjiw staff bach yverify-iwk. Stenna chwia hna 🙂`);
-    } catch (e) {}
-
-    try {
-      await newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session for **${member.displayName}**. Please come verify them here!`);
-    } catch (e) {}
-
-    try {
-      await member.send(`👋 Salam ${member.displayName}! 3ayetna l staff bach yverify-iwk. Dkhol l <#${newChannel.id}> daba 🙂`);
-    } catch (e) {}
+    newChannel.send(`👋 Salam <@${member.id}>! Daba ghadi yjiw staff bach yverify-iwk. Stenna chwia hna 🙂`).catch(() => {});
+    newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session for **${member.displayName}**. Please come verify them here!`).catch(() => {});
+    member.send(`👋 Salam ${member.displayName}! 3ayetna l staff bach yverify-iwk. Dkhol l <#${newChannel.id}> daba 🙂`).catch(() => {});
 
     sendLog(guild, `🛡️ **Verification Session:** <@${member.id}> started a verification session in \`${newChannel.name}\`.`).catch(() => {});
     return { success: true, user: member.displayName, mention: `<@${member.id}>`, channel: newChannel.name };
@@ -281,7 +289,7 @@ client.on('guildMemberAdd', async (member) => {
     const role = member.guild.roles.cache.get(ROLE_ID);
     if (!role) return;
     await member.roles.add(role);
-    await sendLog(member.guild, `📥 **New Member:** Assigned the base role to <@${member.id}> (${member.user.tag}).`);
+    sendLog(member.guild, `📥 **New Member:** Assigned the base role to <@${member.id}> (${member.user.tag}).`).catch(() => {});
   } catch (error) {
     console.error(`Failed to assign role: ${error.message}`);
   }
@@ -307,7 +315,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
       }
     } catch (e) {}
 
-    await sendLog(newMember.guild, `📝 **Nickname Change:** ${executorString} changed the nickname of <@${newMember.id}> from \`${oldName}\` to \`${newName}\`.`);
+    sendLog(newMember.guild, `📝 **Nickname Change:** ${executorString} changed the nickname of <@${newMember.id}> from \`${oldName}\` to \`${newName}\`.`).catch(() => {});
   }
 });
 
@@ -326,7 +334,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       }
     } catch (err) {}
 
-    await sendLog(newState.guild, `🔀 **Voice Move:** ${executorString} moved <@${newState.member.id}> from \`${oldState.channel.name}\` to \`${newState.channel.name}\`.`);
+    sendLog(newState.guild, `🔀 **Voice Move:** ${executorString} moved <@${newState.member.id}> from \`${oldState.channel.name}\` to \`${newState.channel.name}\`.`).catch(() => {});
   }
 
   // B. LOGGING SERVER MUTE AND DEAFEN
@@ -348,7 +356,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         }
       } catch (err) {}
 
-      await sendLog(newState.guild, `🔇 **Voice Moderation:** ${executorString} ${action} <@${newState.member.id}>.`);
+      sendLog(newState.guild, `🔇 **Voice Moderation:** ${executorString} ${action} <@${newState.member.id}>.`).catch(() => {});
     }
   }
 
@@ -366,15 +374,15 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       try {
         roomOwners.delete(channel.id);
         await channel.delete();
-        await sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${channel.name}\`.`);
+        sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${channel.name}\`.`).catch(() => {});
       } catch (err) {
-        await sendLog(channel.guild, `⚠️ **Cleanup Failed:** \`${channel.name}\` — ${err.message} (bot has ManageChannels: ${canManage}).`).catch(() => {});
+        sendLog(channel.guild, `⚠️ **Cleanup Failed:** \`${channel.name}\` — ${err.message} (bot has ManageChannels: ${canManage}).`).catch(() => {});
         setTimeout(async () => {
           try {
             const ch = channel.guild.channels.cache.get(channel.id);
             if (ch && ch.members.size === 0) {
               await ch.delete();
-              await sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${ch.name}\`.`).catch(() => {});
+              sendLog(channel.guild, `🗑️ **Room Deleted:** Auto-deleted empty temporary channel \`${ch.name}\`.`).catch(() => {});
             }
           } catch (e) {}
         }, 1500);
@@ -424,22 +432,20 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
       roomOwners.set(customChannel.id, member.id);
       await member.voice.setChannel(customChannel);
-      await sendLog(guild, `🎙️ **Room Created:** <@${member.id}> created a custom voice channel (\`${customChannel.name}\`).`);
+      sendLog(guild, `🎙️ **Room Created:** <@${member.id}> created a custom voice channel (\`${customChannel.name}\`).`).catch(() => {});
 
-      setTimeout(async () => {
-        try {
-          await customChannel.send(
-            `👋 Welcome to your custom room, <@${member.id}>!\n` +
-            `Here are the commands you can use to control your channel:\n` +
-            `• \`.a name <new name>\` - Rename your room\n` +
-            `• \`.a lock\` - Lock your room so no one else can join\n` +
-            `• \`.a unlock\` - Unlock your room\n` +
-            `• \`.a limit <number>\` - Set a max user limit (0 for unlimited)\n` +
-            `• \`.a add @User\` (or \`.a permit @User\`) - Allow a specific user to join\n` +
-            `• \`.a reject @User\` - Block and kick a user from your room\n` +
-            `• \`.a claim\` - Reclaim ownership if the bot restarts`
-          );
-        } catch (err) {}
+      setTimeout(() => {
+        customChannel.send(
+          `👋 Welcome to your custom room, <@${member.id}>!\n` +
+          `Here are the commands you can use to control your channel:\n` +
+          `• \`.a name <new name>\` - Rename your room\n` +
+          `• \`.a lock\` - Lock your room so no one else can join\n` +
+          `• \`.a unlock\` - Unlock your room\n` +
+          `• \`.a limit <number>\` - Set a max user limit (0 for unlimited)\n` +
+          `• \`.a add @User\` (or \`.a permit @User\`) - Allow a specific user to join\n` +
+          `• \`.a reject @User\` - Block and kick a user from your room\n` +
+          `• \`.a claim\` - Reclaim ownership if the bot restarts`
+        ).catch(() => {});
       }, 1000);
     } catch (error) {}
   }
@@ -1274,7 +1280,7 @@ client.on('messageCreate', async (message) => {
     const cachedMsgs = Array.from(message.channel.messages.cache.values())
       .filter(m => m.id !== message.id && (!m.author.bot || m.author.id === client.user.id))
       .filter(m => (Date.now() - m.createdTimestamp) < 30 * 60 * 1000)
-      .slice(-8);
+      .slice(-6);
 
     if (cachedMsgs.length > 0) {
       channelContext = cachedMsgs
@@ -1299,7 +1305,7 @@ client.on('messageCreate', async (message) => {
       : `[${callerName}]: ${promptText}`;
 
     const systemInstruction = `You are "kho Kokiee", a helpful, witty, and powerful Discord community assistant bot.
-Reply in casual Moroccan Darija written with Latin letters (Arabizi like "salam cv", "labas", "chno", "sketto", "jbedto"). Never use Arabic script. Keep answers short, 1-2 sentences.
+Reply in casual Moroccan Darija written with Latin letters (Arabizi like "salam cv", "labas", "chno", "sketto", "jbedto"). Never use Arabic script. Keep answers very short (1-2 sentences).
 Use the provided Discord tools whenever the user asks for moderation, voice, roles, channels, verification, DMs, or music actions. For regular chit-chat, answer directly in Moroccan Darija.`;
 
     try {
@@ -1308,7 +1314,6 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
       let usedModel = candidates[0] || 'gemini-3.5-flash-lite';
       let chat = null;
 
-      // Retry with fallback models if primary model returns 503 (high demand) or 429
       for (const candidate of candidates.slice(0, 4)) {
         try {
           usedModel = candidate;
@@ -1319,12 +1324,11 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
             tools: discordTools,
           });
 
-          // Dynamically set thinking level based on what the specific model supports
-          let thinkingLevel = undefined;
-          if (usedModel.includes('3.5-flash-lite') || usedModel.includes('2.5-flash-lite')) {
-            thinkingLevel = 'minimal';
-          } else if (usedModel.includes('3.8') || usedModel.includes('2.0-flash')) {
-            thinkingLevel = 'low';
+          let thinkingConfig = undefined;
+          if (usedModel.includes('3.5-flash-lite') || usedModel.includes('3.1-flash-lite')) {
+            thinkingConfig = { thinkingLevel: 'minimal' };
+          } else if (usedModel.includes('3.8-flash') || usedModel.includes('3.6-flash')) {
+            thinkingConfig = { thinkingLevel: 'low' };
           }
 
           chat = model.startChat({
@@ -1332,10 +1336,10 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
             generationConfig: {
               maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
               temperature: 0.7,
-              ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
+              ...(thinkingConfig ? { thinkingConfig } : {}),
             },
           });
-          
+
           result = await chat.sendMessage(finalPrompt);
           activeGeminiModel = usedModel;
           break;
@@ -1343,6 +1347,9 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
           console.warn(`[AI] Model ${usedModel} failed (${err.message}), trying fallback...`);
           if (err.message && err.message.includes('404')) {
             availableModelsCache = availableModelsCache.filter(m => m !== usedModel);
+          }
+          if (activeGeminiModel === usedModel) {
+            activeGeminiModel = null;
           }
           if (!/503|429|404|400|overloaded|unavailable/i.test(err.message)) {
             throw err;
@@ -1491,7 +1498,7 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
     try {
       await targetMember.voice.setChannel(authorVoiceChannel);
       await message.reply(`✅ Moved **${targetMember.displayName}** to your voice channel!`);
-      await sendLog(message.guild, `🧲 **Move Action:** <@${message.author.id}> used \`aji\` to move <@${targetMember.id}> into their voice channel.`);
+      sendLog(message.guild, `🧲 **Move Action:** <@${message.author.id}> used \`aji\` to move <@${targetMember.id}> into their voice channel.`).catch(() => {});
     } catch (err) {
       message.reply('❌ Failed to move the user. Make sure I have "Move Members" permissions.');
     }
@@ -1513,7 +1520,7 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
     try {
       await message.delete();
       await message.channel.send(broadcastText);
-      await sendLog(message.guild, `📢 **Broadcast:** <@${message.author.id}> used the \`.say\` command in <#${message.channel.id}>.`);
+      sendLog(message.guild, `📢 **Broadcast:** <@${message.author.id}> used the \`.say\` command in <#${message.channel.id}>.`).catch(() => {});
     } catch (err) {}
     return;
   }
@@ -1540,7 +1547,7 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
         SendMessages: true,
         ReadMessageHistory: true,
       });
-      await sendLog(message.guild, `🔑 **Room Claimed:** <@${message.author.id}> reclaimed ownership of \`${voiceChannel.name}\`.`);
+      sendLog(message.guild, `🔑 **Room Claimed:** <@${message.author.id}> reclaimed ownership of \`${voiceChannel.name}\`.`).catch(() => {});
       return message.reply('✅ You have successfully reclaimed ownership of this room! You can use `.a` commands again.');
     } catch (err) {
       return message.reply('❌ An error occurred while trying to claim the room.');
