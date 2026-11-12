@@ -26,16 +26,19 @@ if (ffmpegPathString) {
 }
 
 let DisTube = null;
+let YouTubePlugin = null;
 let YtDlpPlugin = null;
 let SoundCloudPlugin = null;
 
 try { DisTube = require('distube').DisTube; } catch (e) { console.error(`[Music] Could not load DisTube: ${e.message}`); }
+try { YouTubePlugin = require('@distube/youtube').YouTubePlugin; } catch (e) { console.error(`[Music] Could not load YouTube plugin: ${e.message}`); }
 try { YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin; } catch (e) { console.error(`[Music] Could not load yt-dlp plugin: ${e.message}`); }
 try { SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin; } catch (e) { console.warn(`[Music] SoundCloud plugin unavailable: ${e.message}`); }
 
-// SoundCloud handles text searches. Keep yt-dlp last as a link-only fallback,
-// as required by the plugin, so the other extractors keep priority.
+// Use YouTube as the main text-search source, keep SoundCloud as another
+// searchable provider, and leave yt-dlp last for links it can extract.
 const plugins = [];
+if (YouTubePlugin) plugins.push(new YouTubePlugin());
 if (SoundCloudPlugin) plugins.push(new SoundCloudPlugin());
 if (YtDlpPlugin) plugins.push(new YtDlpPlugin());
 
@@ -115,7 +118,8 @@ if (distube) {
     }, 15000);
   });
 
-  distube.on('error', (error, queue) => {
+  distube.on('error', (error, queue, song) => {
+    console.error(`[Music] Failed track: ${song?.name || 'unknown'}; source: ${song?.source || 'unknown'}; code: ${error?.errorCode || error?.code || 'unknown'}`);
     console.error('[Music] Playback error:', redactMediaUrls(error?.stack || error?.message || error));
     if (queue && queue.textChannel) {
       queue.textChannel.send('❌ Ma khdemch l-music daba. Jreb chi track akhor.').catch(() => {});

@@ -12,6 +12,7 @@
     "@discordjs/opus": "^0.11.0",
     "@discordjs/voice": "^0.19.2",
     "@distube/soundcloud": "^2.0.0",
+    "@distube/youtube": "^1.1.0",
     "@distube/yt-dlp": "^2.0.1",
     "@google/generative-ai": "^0.24.1",
     "@snazzah/davey": "^0.1.0",
