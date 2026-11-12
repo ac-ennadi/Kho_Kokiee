@@ -475,7 +475,8 @@ function getDirectChannelIntent(text, message) {
   if (/^(how do i|how can i|how to|kifach|chno ma3na|what is)\b/.test(input)) return null;
   const callerRoom = message.member?.voice?.channel;
   const ownsCurrentRoom = callerRoom && isVoiceRoomOwner(message.member, callerRoom);
-  const hasVoiceScope = /\b(voice|room)\b/.test(input) || (ownsCurrentRoom && /\btap\b/.test(input));
+  const isInTemporaryRoom = callerRoom && (roomOwners.has(callerRoom.id) || callerRoom.name.startsWith('🔊 '));
+  const hasVoiceScope = /\b(voice|room)\b/.test(input) || (isInTemporaryRoom && /\btap\b/.test(input));
   const hasTextScope = /\b(text|chat|text channel)\b/.test(input);
   if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room)\b/.test(input)) {
     return { name: 'create_personal_voice_room', args: {} };
@@ -612,7 +613,7 @@ async function executeDiscordTool(name, args, message) {
     if (scope === 'voice') {
       const voiceChannel = caller.voice.channel;
       if (!voiceChannel) return { success: false, error: 'Dkhol l voice room li bghiti t7kem fih.' };
-      if (!isVoiceRoomOwner(caller, voiceChannel) && !canManageChannels(caller)) return { success: false, error: 'T9der t7kem ghir f room dyalk, aw khassek permission dyal staff.' };
+      if (!isVoiceRoomOwner(caller, voiceChannel)) return { success: false, error: 'Ghir moul had voice room y9der ylockiha aw y7ellha.' };
       try {
         await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: action === 'lock' ? false : null });
         return { success: true, action, scope: 'voice', channel: voiceChannel.name };
@@ -870,7 +871,7 @@ client.on('messageCreate', async (message) => {
 Always reply in Moroccan Darija written with Latin letters/Arabizi (like "salam cv", "a sat", "wa3er"); never use Arabic script. Sound casual and human, not formal or robotic. Keep normal replies short (usually 1-2 sentences), use a quick joke when it fits, and don't force jokes into serious conversations.
 Be charming and use light, respectful flirting only when the other person clearly invites that vibe. Never assume someone's gender, pressure them, or make sexual comments about real people.
 You may use casual Darija profanity sparingly as playful, situation-directed banter (for example, "sir t9wad" about a frustrating situation or your own mistake). Never direct insults, humiliation, slurs, or profanity at a server member; soften it if the context is unclear.
-When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel; use scope voice only when they explicitly mean their current voice room. Lock/open text channels only for members with Manage Channels/staff permission; voice-room owners can control their own room. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Use rename_voice_room to change the caller's current room name, and reject_voice_member to deny a mentioned member entry and disconnect them from that room. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests. Never say an action succeeded unless its tool result is success.
+When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel unless they are in a bot-created temporary voice room; then "tap" means that voice room. Only that voice room's owner may lock or open it; reject requests from everyone else, including staff. Lock/open text channels only for members with Manage Channels/staff permission. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Use rename_voice_room to change the caller's current room name, and reject_voice_member to deny a mentioned member entry and disconnect them from that room. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests. Never say an action succeeded unless its tool result is success.
 Use the provided Discord tools when asked to perform an action. For regular chat, answer directly.`;
 
     let streamedMessage = null;
