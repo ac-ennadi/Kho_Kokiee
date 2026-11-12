@@ -473,18 +473,19 @@ function formatToolSummary(executedTools) {
 function getDirectChannelIntent(text, message) {
   const input = text.toLowerCase().trim();
   if (/^(how do i|how can i|how to|kifach|chno ma3na|what is)\b/.test(input)) return null;
-  const hasVoiceScope = /\b(voice|room|room dyali|voice room)\b/.test(input);
+  const callerRoom = message.member?.voice?.channel;
+  const ownsCurrentRoom = callerRoom && isVoiceRoomOwner(message.member, callerRoom);
+  const hasVoiceScope = /\b(voice|room)\b/.test(input) || (ownsCurrentRoom && /\btap\b/.test(input));
+  const hasTextScope = /\b(text|chat|text channel)\b/.test(input);
   if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room)\b/.test(input)) {
     return { name: 'create_personal_voice_room', args: {} };
   }
   const lock = /\b(lock|close|ssed|sedd|sdd|7bes)\b/.test(input);
   const unlock = /\b(open|unlock|t?7ol|t?7ell|t?7el|t?7oul)\b/.test(input);
   if ((lock || unlock) && /\b(tap|chat|channel|voice|room)\b/.test(input)) {
-    return { name: 'manage_current_channel', args: { action: lock ? 'lock' : 'unlock', scope: hasVoiceScope ? 'voice' : 'text' } };
+    return { name: 'manage_current_channel', args: { action: lock ? 'lock' : 'unlock', scope: hasVoiceScope && !hasTextScope ? 'voice' : 'text' } };
   }
 
-  const callerRoom = message.member?.voice?.channel;
-  const ownsCurrentRoom = callerRoom && isVoiceRoomOwner(message.member, callerRoom);
   if (/\b(rename|bdel|bddel|change name|change the name)\b/.test(input)
     && (/\b(room|voice|smit|smiya)\b/.test(input) || ownsCurrentRoom)) {
     const patterns = [
@@ -833,6 +834,7 @@ client.on('messageCreate', async (message) => {
     const directIntent = getDirectChannelIntent(promptText, message);
     if (directIntent) {
       const toolResult = await executeDiscordTool(directIntent.name, directIntent.args, message);
+      console.log(`[AI Direct Action] ${directIntent.name} ${toolResult.success ? 'succeeded' : `failed: ${toolResult.error}`}`);
       const confirmation = formatToolSummary([{ name: directIntent.name, result: toolResult }]);
       return message.reply({ content: confirmation, allowedMentions: { parse: [] } });
     }
