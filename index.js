@@ -1318,14 +1318,24 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
             systemInstruction,
             tools: discordTools,
           });
+
+          // Dynamically set thinking level based on what the specific model supports
+          let thinkingLevel = undefined;
+          if (usedModel.includes('3.5-flash-lite') || usedModel.includes('2.5-flash-lite')) {
+            thinkingLevel = 'minimal';
+          } else if (usedModel.includes('3.8') || usedModel.includes('2.0-flash')) {
+            thinkingLevel = 'low';
+          }
+
           chat = model.startChat({
             history: chatHistory.length > 0 ? chatHistory : undefined,
             generationConfig: {
               maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
               temperature: 0.7,
-              thinkingConfig: { thinkingLevel: 'minimal' },
+              ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
             },
           });
+          
           result = await chat.sendMessage(finalPrompt);
           activeGeminiModel = usedModel;
           break;
@@ -1334,7 +1344,7 @@ Use the provided Discord tools whenever the user asks for moderation, voice, rol
           if (err.message && err.message.includes('404')) {
             availableModelsCache = availableModelsCache.filter(m => m !== usedModel);
           }
-          if (!/503|429|404|overloaded|unavailable/i.test(err.message)) {
+          if (!/503|429|404|400|overloaded|unavailable/i.test(err.message)) {
             throw err;
           }
         }
