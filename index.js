@@ -477,6 +477,9 @@ function formatToolSummary(executedTools) {
 function getDirectChannelIntent(text, message) {
   const input = text.toLowerCase().trim();
   if (/^(how do i|how can i|how to|kifach|chno ma3na|what is)\b/.test(input)) return null;
+  if (/\bmazakni\b/i.test(input)) {
+    return { name: 'play_music', args: { query: 'mazakni' } };
+  }
   const callerRoom = message.member?.voice?.channel;
   const ownsCurrentRoom = callerRoom && isVoiceRoomOwner(message.member, callerRoom);
   const isInTemporaryRoom = callerRoom && (roomOwners.has(callerRoom.id) || callerRoom.name.startsWith('🔊 '));
