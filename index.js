@@ -33,11 +33,11 @@ try { DisTube = require('distube').DisTube; } catch (e) { console.error(`[Music]
 try { YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin; } catch (e) { console.error(`[Music] Could not load yt-dlp plugin: ${e.message}`); }
 try { SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin; } catch (e) { console.warn(`[Music] SoundCloud plugin unavailable: ${e.message}`); }
 
-// Prefer yt-dlp for text searches. SoundCloud can return CBCS-encrypted HLS
-// tracks that FFmpeg cannot decode; keep its plugin as a fallback for URLs.
+// SoundCloud handles text searches. Keep yt-dlp last as a link-only fallback,
+// as required by the plugin, so the other extractors keep priority.
 const plugins = [];
-if (YtDlpPlugin) plugins.push(new YtDlpPlugin()); 
 if (SoundCloudPlugin) plugins.push(new SoundCloudPlugin());
+if (YtDlpPlugin) plugins.push(new YtDlpPlugin());
 
 const client = new Client({
   intents: [
@@ -390,6 +390,10 @@ function findChannel(guild, query, type) {
     return true;
   };
   return guild.channels.cache.find(ch => filterType(ch) && ch.name.toLowerCase() === clean) || guild.channels.cache.find(ch => filterType(ch) && ch.name.toLowerCase().includes(clean)) || null;
+}
+
+function findVoiceChannel(guild, query) {
+  return findChannel(guild, query, 'voice');
 }
 
 async function findTargetMember(guild, query, mentions, botId) {
