@@ -694,6 +694,8 @@ client.on('messageCreate', async (message) => {
 Reply in casual Moroccan Darija (Darija written in Latin letters / Arabizi only; never use Arabic script). Keep answers very short (1-2 sentences).
 Use provided Discord tools when asked. For regular chit-chat, just answer directly.`;
 
+    let streamedMessage = null;
+    const aiStartedAt = Date.now();
     try {
       const candidates = getModelCandidates();
       let result = null;
@@ -712,7 +714,39 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
             },
           });
 
-          result = await chat.sendMessage(finalPrompt);
+          const streamResult = await chat.sendMessageStream(finalPrompt);
+          let streamedText = '';
+          let lastEditAt = 0;
+          let firstTextLogged = false;
+
+          for await (const chunk of streamResult.stream) {
+            let chunkText = '';
+            try { chunkText = chunk.text(); } catch (e) {}
+            if (!chunkText) continue;
+
+            streamedText += chunkText;
+            if (!firstTextLogged) {
+              firstTextLogged = true;
+              console.log(`[AI Timing] First text chunk in ${Date.now() - aiStartedAt}ms (${candidate})`);
+            }
+
+            const visibleText = streamedText.length > 1996 ? `${streamedText.slice(0, 1993)}...` : streamedText;
+            if (!streamedMessage) {
+              streamedMessage = await message.reply({
+                content: visibleText,
+                allowedMentions: { parse: [] },
+              });
+              lastEditAt = Date.now();
+            } else if (Date.now() - lastEditAt >= 1200) {
+              await streamedMessage.edit({
+                content: visibleText,
+                allowedMentions: { parse: [] },
+              }).catch(e => console.warn(`[AI] Could not update streamed reply: ${e.message}`));
+              lastEditAt = Date.now();
+            }
+          }
+
+          result = { response: await streamResult.response };
           break; // Break on success!
         } catch (err) {
           console.warn(`[AI] Model ${candidate} failed (${err.message})`);
@@ -761,12 +795,18 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
       if (!responseText) throw new Error('Empty response');
       if (responseText.length > 2000) responseText = responseText.substring(0, 1996) + '...';
 
-      console.log(`[AI] Replying (${responseText.length} chars)`);
-      await message.reply(responseText).catch(() => message.channel.send(responseText));
+      console.log(`[AI Timing] Completed in ${Date.now() - aiStartedAt}ms (${responseText.length} chars)`);
+      if (streamedMessage) {
+        await streamedMessage.edit({ content: responseText, allowedMentions: { parse: [] } });
+      } else {
+        await message.reply({ content: responseText, allowedMentions: { parse: [] } });
+      }
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
       aiUserCooldowns.delete(message.author.id);
-      await message.reply('😅 Sme7 lia, w9e3 mochkil f ljawab. 3awed jereb mn b3d chwia.').catch(() => {});
+      const errorReply = '😅 Sme7 lia, w9e3 mochkil f ljawab. 3awed jereb mn b3d chwia.';
+      if (streamedMessage) await streamedMessage.edit(errorReply).catch(() => {});
+      else await message.reply(errorReply).catch(() => {});
     }
     return;
   }
