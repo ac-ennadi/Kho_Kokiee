@@ -29,9 +29,9 @@ let DisTube = null;
 let YtDlpPlugin = null;
 let SoundCloudPlugin = null;
 
-try { DisTube = require('distube').DisTube; } catch (e) {}
-try { YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin; } catch (e) {}
-try { SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin; } catch (e) {}
+try { DisTube = require('distube').DisTube; } catch (e) { console.error(`[Music] Could not load DisTube: ${e.message}`); }
+try { YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin; } catch (e) { console.error(`[Music] Could not load yt-dlp plugin: ${e.message}`); }
+try { SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin; } catch (e) { console.warn(`[Music] SoundCloud plugin unavailable: ${e.message}`); }
 
 // Use default plugins so yt-dlp auto-updates its YouTube signatures (Fixes FFmpeg Code 1)
 const plugins = [];
@@ -52,13 +52,18 @@ const client = new Client({
   },
 });
 
-const distube = DisTube
-  ? new DisTube(client, {
-      plugins: plugins,
+let distube = null;
+if (DisTube) {
+  try {
+    distube = new DisTube(client, {
+      plugins,
       emitNewSongOnly: true,
       ffmpeg: { path: ffmpegPathString || 'ffmpeg' },
-    })
-  : null;
+    });
+  } catch (e) {
+    console.error(`[Music] Could not initialize DisTube: ${e.stack || e.message}`);
+  }
+}
 
 if (distube) {
   distube.on('playSong', (queue, song) => {
@@ -154,7 +159,8 @@ async function getModelCandidates() {
 const aiUserCooldowns = new Map();
 const AI_COOLDOWN_MS = 2000;
 const AI_MAX_QUESTION_CHARS = 1500;
-const AI_MAX_OUTPUT_TOKENS = 400;
+const AI_MAX_CONTEXT_CHARS = 2500;
+const AI_MAX_OUTPUT_TOKENS = 180;
 const roomOwners = new Map();
 
 async function sendLog(guild, messageText) {
@@ -231,7 +237,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     try {
       const fetchedLogs = await newState.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberMove });
       const moveLog = fetchedLogs.entries.first();
-      if (moveLog && (Date.now() - moveLog.createdTimestamp < 3000)) executorString = `<@${moveLog.executor.id}> (Moderator)`;
+      if (moveLog && moveLog.target.id === newState.member.id && (Date.now() - moveLog.createdTimestamp < 3000)) executorString = `<@${moveLog.executor.id}> (Moderator)`;
     } catch (err) {}
     sendLog(newState.guild, `🔀 **Voice Move:** ${executorString} moved <@${newState.member.id}> from \`${oldState.channel.name}\` to \`${newState.channel.name}\`.`).catch(() => {});
   }
@@ -311,7 +317,7 @@ const discordTools = [{
     { name: 'undeafen_member', description: 'Undeafens a user.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } }, required: ['target_user'] } },
     { name: 'create_channel', description: 'Creates a channel.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' }, type: { type: 'STRING' } }, required: ['name'] } },
     { name: 'create_role', description: 'Creates a role.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' } }, required: ['name'] } },
-    { name: 'move_all_members', description: 'Moves everyone in voice to another channel.', parameters: { type: 'OBJECT', properties: { source_channel: { type: 'STRING' }, destination_channel: { type: 'STRING' } }, required: ['destination_channel'] } },
+    { name: 'move_all_members', description: 'Moves everyone from the named source voice channel to the named destination voice channel (or the caller voice channel when destination is "here").', parameters: { type: 'OBJECT', properties: { source_channel: { type: 'STRING' }, destination_channel: { type: 'STRING' } }, required: ['source_channel', 'destination_channel'] } },
     { name: 'move_members', description: 'Moves specific multiple users.', parameters: { type: 'OBJECT', properties: { target_users: { type: 'STRING' }, destination: { type: 'STRING' } }, required: ['target_users'] } },
     { name: 'dm_members', description: 'DMs users.', parameters: { type: 'OBJECT', properties: { target_users: { type: 'STRING' }, message_text: { type: 'STRING' } }, required: ['target_users', 'message_text'] } },
     { name: 'start_verification', description: 'Starts verification.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } } } },
@@ -438,6 +444,14 @@ function canCallerMove(caller) {
   return (MOVE_ROLE_ID && caller.roles.cache.has(MOVE_ROLE_ID)) || (STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID)) || caller.permissions.has(PermissionsBitField.Flags.Administrator) || caller.permissions.has(PermissionsBitField.Flags.MoveMembers);
 }
 
+function canManageChannels(caller) {
+  return (STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID)) || caller.permissions.has(PermissionsBitField.Flags.Administrator) || caller.permissions.has(PermissionsBitField.Flags.ManageChannels);
+}
+
+function canManageRoles(caller) {
+  return (STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID)) || caller.permissions.has(PermissionsBitField.Flags.Administrator) || caller.permissions.has(PermissionsBitField.Flags.ManageRoles);
+}
+
 async function executeDiscordTool(name, args, message) {
   const caller = message.member;
   const noTargetTools = ['create_channel', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
@@ -503,41 +517,58 @@ async function executeDiscordTool(name, args, message) {
   }
 
   if (name === 'create_channel') {
-    if (!canCallerModerate(caller)) return { success: false, error: 'Ghir staff.' };
+    if (!canManageChannels(caller)) return { success: false, error: 'Ghir staff li 3ndhom Manage Channels.' };
     if (!args.name) return { success: false, error: 'Smit channel darori.' };
     try { const newChannel = await message.guild.channels.create({ name: args.name, type: (args.type === 'voice' ? ChannelType.GuildVoice : ChannelType.GuildText) }); return { success: true, name: newChannel.name, mention: `<#${newChannel.id}>`, type: args.type }; } catch (err) { return { success: false, error: err.message }; }
   }
 
   if (name === 'create_role') {
-    if (!canCallerModerate(caller)) return { success: false, error: 'Ghir staff.' };
+    if (!canManageRoles(caller)) return { success: false, error: 'Ghir staff li 3ndhom Manage Roles.' };
     if (!args.name) return { success: false, error: 'Smit role darori.' };
     try { const role = await message.guild.roles.create({ name: args.name }); return { success: true, name: role.name, mention: `<@&${role.id}>` }; } catch (err) { return { success: false, error: err.message }; }
   }
 
   if (name === 'move_all_members') {
     if (!canCallerMove(caller)) return { success: false, error: 'Ma 3ndekch permission.' };
-    const dest = caller.voice.channel;
-    if (!dest) return { success: false, error: 'Khassek tkon f voice channel.' };
+    const destinationQuery = args.destination_channel;
+    let dest = destinationQuery && !['here', 'me', 'my channel', 'my voice', 'hna', 'l hna'].includes(destinationQuery.toLowerCase().trim())
+      ? findVoiceChannel(message.guild, destinationQuery)
+      : caller.voice.channel;
+    if (!dest) return { success: false, error: 'Ma lqitch destination voice channel.' };
     const source = findVoiceChannel(message.guild, args.source_channel);
     if (!source || source.id === dest.id) return { success: false, error: 'Ma lqitch source.' };
     let moved = 0;
-    for (const m of Array.from(source.members.values())) { try { await m.voice.setChannel(dest); moved++; } catch (e) {} }
-    return { success: true, moved, source: source.name, dest: dest.name };
+    const errors = [];
+    for (const m of Array.from(source.members.values())) {
+      try { await m.voice.setChannel(dest); moved++; }
+      catch (e) { errors.push(`${m.displayName}: ${e.message}`); }
+    }
+    return { success: errors.length === 0, moved, source: source.name, dest: dest.name, ...(errors.length ? { error: `Moved ${moved}; failed for ${errors.length}: ${errors.slice(0, 3).join('; ')}` } : {}) };
   }
 
   if (name === 'move_members') {
     if (!canCallerMove(caller)) return { success: false, error: 'Ma 3ndekch permission.' };
     const members = await resolveMembers(message.guild, args.target_users, message.mentions, message.client.user.id);
-    const dest = caller.voice.channel;
-    if (!dest) return { success: false, error: 'Khassek tkon f voice channel.' };
+    if (members.length === 0) return { success: false, error: 'Ma lqitch chi members bach n7errek.' };
+    const destinationQuery = args.destination;
+    const dest = destinationQuery && !['here', 'me', 'my channel', 'my voice', 'hna', 'l hna'].includes(destinationQuery.toLowerCase().trim())
+      ? findVoiceChannel(message.guild, destinationQuery)
+      : caller.voice.channel;
+    if (!dest) return { success: false, error: 'Ma lqitch destination voice channel.' };
     let moved = 0;
-    for (const m of members) { try { await m.voice.setChannel(dest); moved++; } catch (e) {} }
-    return { success: true, moved, dest: dest.name };
+    const errors = [];
+    for (const m of members) {
+      try { await m.voice.setChannel(dest); moved++; }
+      catch (e) { errors.push(`${m.displayName}: ${e.message}`); }
+    }
+    return { success: errors.length === 0, moved, dest: dest.name, ...(errors.length ? { error: `Moved ${moved}; failed for ${errors.length}: ${errors.slice(0, 3).join('; ')}` } : {}) };
   }
 
   if (name === 'dm_members') {
     if (!canCallerModerate(caller)) return { success: false, error: 'Ghir staff.' };
     const members = await resolveMembers(message.guild, args.target_users, message.mentions, message.client.user.id);
+    if (members.length === 0) return { success: false, error: 'Ma lqitch chi members bach nsift lihom.' };
+    if (!args.message_text || !args.message_text.trim()) return { success: false, error: 'Message khawya.' };
     let sent = 0;
     for (const m of members) { try { await m.send(args.message_text); sent++; } catch (e) {} }
     return { success: true, sent };
@@ -545,14 +576,21 @@ async function executeDiscordTool(name, args, message) {
 
   if (name === 'start_verification') {
     let target = caller;
-    if (args.target_user) target = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id) || caller;
+    if (args.target_user) {
+      target = await findTargetMember(message.guild, args.target_user, message.mentions, message.client.user.id);
+      if (!target) return { success: false, error: 'Ma lqitch had member.' };
+      const isStaff = (STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID)) || caller.permissions.has(PermissionsBitField.Flags.Administrator);
+      if (target.id !== caller.id && !isStaff) return { success: false, error: 'T9der t-requesti verification ghir l rassek.' };
+    }
     return await startVerification(message.guild, target);
   }
 
   if (name === 'join_voice') {
     if (!distube) return { success: false, error: 'Music missing.' };
-    const ch = caller.voice.channel;
-    if (!ch) return { success: false, error: 'Dkhol l voice b3da.' };
+    const ch = args.channel && !['here', 'me', 'my channel', 'hna'].includes(args.channel.toLowerCase().trim())
+      ? findVoiceChannel(message.guild, args.channel)
+      : caller.voice.channel;
+    if (!ch) return { success: false, error: 'Ma lqitch voice channel; dkhol l voice aw 3tini smitha.' };
     try { await distube.voices.join(ch); return { success: true, channel: ch.name }; } catch (e) { return { success: false, error: e.message }; }
   }
 
@@ -560,6 +598,7 @@ async function executeDiscordTool(name, args, message) {
   if (name === 'play_music') {
     const query = (args.query || '').trim();
     if (!query) return { success: false, error: 'Kteb smit l-ghnya.' };
+    if (query.length > 500) return { success: false, error: 'Query twila bzaf; khas-ha tkoun 500 character aw a9al.' };
     if (!distube) return { success: false, error: 'Music missing.' };
     const targetChannel = caller.voice.channel || message.guild.members.me.voice.channel;
     if (!targetChannel) return { success: false, error: 'Dkhol l voice b3da.' };
@@ -587,16 +626,18 @@ async function executeDiscordTool(name, args, message) {
   }
 
   if (name === 'delete_channel') {
-    if (!canCallerModerate(caller)) return { success: false, error: 'Ma 3ndekch permission.' };
+    if (!canManageChannels(caller)) return { success: false, error: 'Ma 3ndekch Manage Channels.' };
     const target = findChannel(message.guild, args.channel_name);
     if (!target) return { success: false, error: `Channel ma kaynch.` };
     try { const n = target.name; await target.delete(); return { success: true, name: n }; } catch (e) { return { success: false, error: e.message }; }
   }
 
   if (name === 'delete_role') {
-    if (!canCallerModerate(caller)) return { success: false, error: 'Ma 3ndekch permission.' };
+    if (!canManageRoles(caller)) return { success: false, error: 'Ma 3ndekch Manage Roles.' };
     const role = findRole(message.guild, args.role_name);
     if (!role) return { success: false, error: `Role ma kaynch.` };
+    const roleCheck = checkRoleManagementPermissions(caller, role, message.guild);
+    if (!roleCheck.allowed) return { success: false, error: roleCheck.error };
     try { const n = role.name; await role.delete(); return { success: true, name: n }; } catch (e) { return { success: false, error: e.message }; }
   }
 
@@ -626,8 +667,12 @@ client.on('messageCreate', async (message) => {
 
     const promptText = (botMention ? message.content.replace(botMention, '') : message.content).trim();
     if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al 🙂');
+    if (promptText.length > AI_MAX_QUESTION_CHARS) return message.reply(`Sou2al twil bzaf 😅 7awel tkhtasro l ${AI_MAX_QUESTION_CHARS} 7arf.`);
 
     const now = Date.now();
+    for (const [userId, timestamp] of aiUserCooldowns) {
+      if (now - timestamp >= AI_COOLDOWN_MS) aiUserCooldowns.delete(userId);
+    }
     const lastRequest = aiUserCooldowns.get(message.author.id) || 0;
     if (now - lastRequest < AI_COOLDOWN_MS) return message.reply('3tini ghir chwia w nrje3 njawbek 🙂');
     aiUserCooldowns.set(message.author.id, now);
@@ -648,10 +693,11 @@ client.on('messageCreate', async (message) => {
     }
 
     const callerName = message.member?.displayName || message.author.username;
+    if (channelContext.length > AI_MAX_CONTEXT_CHARS) channelContext = channelContext.slice(-AI_MAX_CONTEXT_CHARS);
     const finalPrompt = channelContext ? `Recent channel conversation:\n${channelContext}\n\nCurrent message from [${callerName}]:\n${promptText}` : `[${callerName}]: ${promptText}`;
 
     const systemInstruction = `You are "kho Kokiee", a helpful, witty Discord bot.
-Reply in casual Moroccan Darija (Arabizi). Keep answers very short (1-2 sentences).
+Reply in casual Moroccan Darija (Darija written in Latin letters / Arabizi only; never use Arabic script). Keep answers very short (1-2 sentences).
 Use provided Discord tools when asked. For regular chit-chat, just answer directly.`;
 
     try {
@@ -722,7 +768,7 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
       aiUserCooldowns.delete(message.author.id);
-      await message.reply('😅 Sme7 lia, l-servers dyal AI 3amrin chwia (503). 3awed jarreb mn b3d chwia!').catch(() => {});
+      await message.reply('😅 Sme7 lia, w9e3 mochkil f ljawab. 3awed jereb mn b3d chwia.').catch(() => {});
     }
     return;
   }
@@ -734,6 +780,8 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
     const musicQuery = message.content.slice(5).trim();
     if (!distube) return message.reply('❌ Music ma kaynch.');
     if (!message.member.voice.channel) return message.reply('❌ Khassek tkon f voice channel bach tplayi l-music.');
+    if (!musicQuery) return message.reply('❌ Kteb smit l-ghnya. Mithal: `play chkoun li gal`');
+    if (musicQuery.length > 500) return message.reply('❌ Sou2al twil bzaf. Khtasar smit l-ghnya aw sift link.');
     
     // ==== NON-BLOCKING PLAY (Instant Response) ====
     distube.play(message.member.voice.channel, musicQuery, {
@@ -748,36 +796,45 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
   }
 
   if (msgLower === 'stop' || msgLower === 'stop music') {
-    if (!distube) return;
+    if (!distube) return message.reply('❌ Music ma kaynch.');
     const q = distube.getQueue(message.guild);
-    if (q) q.stop();
+    if (!q) return message.reply('❌ Ma kaynch chi music khdama daba.');
+    q.stop();
     return message.reply('⏹️ Safi w9eft l-music.');
   }
 
   if (msgLower === 'skip' || msgLower === 'skip music') {
-    if (!distube) return;
+    if (!distube) return message.reply('❌ Music ma kaynch.');
     const q = distube.getQueue(message.guild);
     if (!q) return message.reply('❌ Ma kaynch chi music khdama.');
     try { await q.skip(); message.reply('⏭️ Dozt l-ghnya.'); } catch (e) { q.stop(); message.reply('⏹️ Hada akher track.'); }
   }
 
   if (msgLower === 'leave voice' || msgLower === 'leave music') {
-    if (!distube) return;
+    if (!distube) return message.reply('❌ Music ma kaynch.');
     const q = distube.getQueue(message.guild);
     if (q) q.stop();
-    distube.voices.leave(message.guild);
+    await distube.voices.leave(message.guild);
     return message.reply('👋 Thllaw!');
   }
 
   // C. VOICE ROOM CONTROL COMMANDS
-  if (!message.content.startsWith('.a')) return;
+  if (!/^\.a(?:\s|$)/i.test(message.content)) return;
   const args = message.content.slice(2).trim().split(/ +/);
-  const command = args.shift().toLowerCase();
+  const command = (args.shift() || '').toLowerCase();
+  if (!command) return message.reply('❌ Kteb command b7al `.a lock` aw `.a name smiya`.');
   const voiceChannel = message.member?.voice?.channel;
 
   if (!voiceChannel) return message.reply('❌ You must be connected to a voice channel.');
 
   if (command === 'claim') {
+    if (!voiceChannel.name.startsWith('🔊 ') && !voiceChannel.name.includes("'s Room")) {
+      return message.reply('❌ T9der tclaim ghir custom room dyal bot.');
+    }
+    const existingOwnerOverwrite = voiceChannel.permissionOverwrites.cache.get(message.author.id);
+    if (!existingOwnerOverwrite?.allow.has(PermissionsBitField.Flags.ManageChannels)) {
+      return message.reply('❌ Ghir moul l-room y9der yclaimiha.');
+    }
     roomOwners.set(voiceChannel.id, message.author.id);
     await voiceChannel.permissionOverwrites.edit(message.author.id, { ManageChannels: true, Connect: true, Speak: true, SendMessages: true });
     return message.reply('✅ Room claimed.');
@@ -786,11 +843,24 @@ Use provided Discord tools when asked. For regular chit-chat, just answer direct
   if (roomOwners.get(voiceChannel.id) !== message.author.id) return message.reply('❌ You do not own this room.');
 
   try {
-    if (command === 'name') { await voiceChannel.setName(`🔊 ${args.join(' ')}`); message.reply('✅ Room renamed.'); }
+    if (command === 'name') {
+      const newName = args.join(' ').trim();
+      if (!newName) return message.reply('❌ Kteb smiya jdida: `.a name smiya`.');
+      await voiceChannel.setName(`🔊 ${newName}`);
+      message.reply('✅ Room renamed.');
+    }
     else if (command === 'lock') { await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: false }); message.reply('🔒 Room locked.'); }
     else if (command === 'unlock') { await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: null }); message.reply('🔓 Room unlocked.'); }
-    else if (command === 'limit') { await voiceChannel.setUserLimit(parseInt(args[0], 10)); message.reply('✅ Limit updated.'); }
-  } catch (err) {}
+    else if (command === 'limit') {
+      const limit = Number(args[0]);
+      if (!Number.isInteger(limit) || limit < 0 || limit > 99) return message.reply('❌ L-limit khaso ykon bin 0 w 99.');
+      await voiceChannel.setUserLimit(limit);
+      message.reply('✅ Limit updated.');
+    } else return message.reply('❌ Had command ma kaynach. Jرب `.a lock`, `.a unlock`, `.a name`, ola `.a limit`.');
+  } catch (err) {
+    console.error(`[Voice Room] ${command} failed: ${err.message}`);
+    message.reply('❌ Ma qdertch ndir had l-command. T2ekked mn permissions dyal bot.').catch(() => {});
+  }
 });
 
 client.login(process.env.DISCORD_TOKEN);
