@@ -518,6 +518,15 @@ function getDirectChannelIntent(text, message) {
   return null;
 }
 
+function explicitlyRequestedVoiceModeration(message, action) {
+  const text = message.content
+    .replace(new RegExp(`<@!?${message.client.user.id}>`, 'g'), '')
+    .toLowerCase();
+  if (action === 'mute') return /\b(mute|silence|sket|saket|skt)\b/.test(text);
+  if (action === 'unmute') return /\b(unmute|unsilence|tl9|tlaq|7ell l-mic)\b/.test(text);
+  return false;
+}
+
 function checkRoleManagementPermissions(caller, role, guild) {
   const isOwner = guild.ownerId === caller.id;
   const isAdmin = caller.permissions.has(PermissionsBitField.Flags.Administrator);
@@ -580,6 +589,7 @@ async function executeDiscordTool(name, args, message) {
   }
 
   if (name === 'mute_member') {
+    if (!explicitlyRequestedVoiceModeration(message, 'mute')) return { success: false, error: 'Ma n9drch n-muti chi wa7ed bla ma tlebha nta b wadou7.' };
     if (!canCallerModerate(caller)) return { success: false, error: 'Ghir staff.' };
     if (targetMember.id === message.client.user.id) return { success: false, error: 'Ma ymkench t-muti l-bot.' };
     if (!targetMember.voice.channel) return { success: false, error: `${targetMember.displayName} ma dakhltch l voice.` };
@@ -587,6 +597,7 @@ async function executeDiscordTool(name, args, message) {
   }
 
   if (name === 'unmute_member') {
+    if (!explicitlyRequestedVoiceModeration(message, 'unmute')) return { success: false, error: 'Ma n9drch n-unmute chi wa7ed bla ma tlebha nta b wadou7.' };
     if (!canCallerModerate(caller)) return { success: false, error: 'Ghir staff.' };
     try { if (targetMember.voice.channel) await targetMember.voice.setMute(false); return { success: true, user: targetMember.displayName, mention: `<@${targetMember.id}>` }; } catch (err) { return { success: false, error: err.message }; }
   }
@@ -878,12 +889,12 @@ client.on('messageCreate', async (message) => {
     if (channelContext.length > AI_MAX_CONTEXT_CHARS) channelContext = channelContext.slice(-AI_MAX_CONTEXT_CHARS);
     const finalPrompt = channelContext ? `Recent channel conversation:\n${channelContext}\n\nCurrent message from [${callerName}]:\n${promptText}` : `[${callerName}]: ${promptText}`;
 
-    const systemInstruction = `You are kho Kokiee, a friendly, funny Discord bot with a natural Moroccan Darija personality.
+    const systemInstruction = `You are kho Kokiee, an original, strict-but-funny Moroccan Darija Discord moderator with dramatic referee energy. Do not imitate or claim to be any real historical leader or extremist figure, and do not use extremist slogans or propaganda.
 Always reply in Moroccan Darija written with Latin letters/Arabizi (like "salam cv", "a sat", "wa3er"); never use Arabic script. Sound casual and human, not formal or robotic. Keep normal replies short (usually 1-2 sentences), use a quick joke when it fits, and don't force jokes into serious conversations.
-Be charming and use light, respectful flirting only when the other person clearly invites that vibe. Never assume someone's gender, pressure them, or make sexual comments about real people.
+Be confident and firm about server rules without humiliating members, making threats, or using slurs. Do not make sexual comments about real people.
 You may use casual Darija profanity sparingly as playful, situation-directed banter (for example, "sir t9wad" about a frustrating situation or your own mistake). Never direct insults, humiliation, slurs, or profanity at a server member; soften it if the context is unclear.
 When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel unless they are in a bot-created temporary voice room; then "tap" means that voice room. Only that voice room's owner may lock or open it; reject requests from everyone else, including staff. Lock/open text channels only for members with Manage Channels/staff permission. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Use rename_voice_room to change the caller's current room name, and reject_voice_member to deny a mentioned member entry and disconnect them from that room. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests. Never say an action succeeded unless its tool result is success.
-Use the provided Discord tools when asked to perform an action. For regular chat, answer directly.`;
+Use the provided Discord tools only for actions the current user clearly requested. Never decide by yourself to mute, unmute, remove, or punish anyone. Mute/unmute require an explicit request and the caller's staff/moderation permission; if not requested or authorized, refuse. You do not have a ban action. For regular chat, answer directly.`;
 
     let streamedMessage = null;
     const aiStartedAt = Date.now();
