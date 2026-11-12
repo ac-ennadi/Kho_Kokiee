@@ -65,7 +65,28 @@ if (DisTube) {
   }
 }
 
+// FFmpeg diagnostics often contain expiring, signed media URLs. Keep the
+// useful stderr while redacting those URLs before they reach Railway logs.
+function redactMediaUrls(value) {
+  return String(value).replace(/https?:\/\/[^\s"'<>]+/gi, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      return `${parsed.origin}${parsed.pathname}[query-redacted]`;
+    } catch {
+      return '[media-url-redacted]';
+    }
+  });
+}
+
 if (distube) {
+  distube.on('ffmpegDebug', (debug) => {
+    console.warn(`[Music][FFmpeg] ${redactMediaUrls(debug)}`);
+  });
+
+  distube.on('debug', (debug) => {
+    console.log(`[Music][Debug] ${redactMediaUrls(debug)}`);
+  });
+
   distube.on('playSong', (queue, song) => {
     if (queue && queue.textChannel) {
       queue.textChannel.send(`🎶 Daba kayn-playi: \`${song.name}\``).catch(() => {});
@@ -88,9 +109,9 @@ if (distube) {
   });
 
   distube.on('error', (error, queue) => {
-    console.error('[Music] Full Error:', error);
+    console.error('[Music] Playback error:', redactMediaUrls(error?.stack || error?.message || error));
     if (queue && queue.textChannel) {
-      queue.textChannel.send(`❌ W9e3 error f l-music: \`${error.message}\``).catch(() => {});
+      queue.textChannel.send('❌ Ma khdemch l-music daba. Jreb chi track akhor.').catch(() => {});
     }
   });
 }
