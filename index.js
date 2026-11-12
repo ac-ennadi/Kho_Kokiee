@@ -33,10 +33,11 @@ try { DisTube = require('distube').DisTube; } catch (e) { console.error(`[Music]
 try { YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin; } catch (e) { console.error(`[Music] Could not load yt-dlp plugin: ${e.message}`); }
 try { SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin; } catch (e) { console.warn(`[Music] SoundCloud plugin unavailable: ${e.message}`); }
 
-// Use default plugins so yt-dlp auto-updates its YouTube signatures (Fixes FFmpeg Code 1)
+// Prefer yt-dlp for text searches. SoundCloud can return CBCS-encrypted HLS
+// tracks that FFmpeg cannot decode; keep its plugin as a fallback for URLs.
 const plugins = [];
-if (SoundCloudPlugin) plugins.push(new SoundCloudPlugin());
 if (YtDlpPlugin) plugins.push(new YtDlpPlugin()); 
+if (SoundCloudPlugin) plugins.push(new SoundCloudPlugin());
 
 const client = new Client({
   intents: [
@@ -78,13 +79,19 @@ function redactMediaUrls(value) {
   });
 }
 
+const ffmpegDebugCounts = new Map();
 if (distube) {
   distube.on('ffmpegDebug', (debug) => {
-    console.warn(`[Music][FFmpeg] ${redactMediaUrls(debug)}`);
-  });
-
-  distube.on('debug', (debug) => {
-    console.log(`[Music][Debug] ${redactMediaUrls(debug)}`);
+    const message = redactMediaUrls(debug);
+    const processId = message.match(/\[(\d{8,})\]/)?.[1] || 'unknown';
+    const count = ffmpegDebugCounts.get(processId) || 0;
+    if (count < 25) {
+      console.warn(`[Music][FFmpeg] ${message}`);
+      ffmpegDebugCounts.set(processId, count + 1);
+    } else if (count === 25) {
+      console.warn(`[Music][FFmpeg] Suppressing further FFmpeg output for process ${processId}.`);
+      ffmpegDebugCounts.set(processId, count + 1);
+    }
   });
 
   distube.on('playSong', (queue, song) => {
