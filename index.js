@@ -354,6 +354,8 @@ const discordTools = [{
     { name: 'undeafen_member', description: 'Undeafens a user.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } }, required: ['target_user'] } },
     { name: 'create_channel', description: 'Creates a channel.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' }, type: { type: 'STRING' } }, required: ['name'] } },
     { name: 'manage_current_channel', description: 'Locks or opens the current text channel, or the caller-owned temporary voice room. Use scope text for chat channels and voice for a voice room. Only act when the user clearly asks to lock/close or open/unlock it.', parameters: { type: 'OBJECT', properties: { action: { type: 'STRING', enum: ['lock', 'unlock'] }, scope: { type: 'STRING', enum: ['text', 'voice'] } }, required: ['action', 'scope'] } },
+    { name: 'rename_voice_room', description: 'Renames the caller-owned temporary voice room to the requested name.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' } }, required: ['name'] } },
+    { name: 'reject_voice_member', description: 'Rejects a member from the caller-owned temporary voice room by denying Connect and disconnecting them. Requires target_user.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } }, required: ['target_user'] } },
     { name: 'create_personal_voice_room', description: 'Creates a new personal temporary voice room for the person asking and moves them into it. Use when they ask for a new voice room/channel for themselves.', parameters: { type: 'OBJECT', properties: {} } },
     { name: 'create_role', description: 'Creates a role.', parameters: { type: 'OBJECT', properties: { name: { type: 'STRING' } }, required: ['name'] } },
     { name: 'move_all_members', description: 'Moves everyone from the named source voice channel to the named destination voice channel (or the caller voice channel when destination is "here").', parameters: { type: 'OBJECT', properties: { source_channel: { type: 'STRING' }, destination_channel: { type: 'STRING' } }, required: ['source_channel', 'destination_channel'] } },
@@ -455,6 +457,8 @@ function formatToolSummary(executedTools) {
         case 'manage_current_channel': return r.scope === 'voice'
           ? `Safi ${r.action === 'lock' ? 'seddt' : '7ellit'} voice room \`${r.channel}\` ${r.action === 'lock' ? '🔒' : '🔓'}`
           : `Safi ${r.action === 'lock' ? 'seddt' : '7ellit'} text channel <#${r.channelId || ''}> ${r.action === 'lock' ? '🔒' : '🔓'}`;
+        case 'rename_voice_room': return `Safi bdeltt smit room l ${r.name} ✅`;
+        case 'reject_voice_member': return `Safi khrejt ${r.mention || r.user} mn ${r.channel} w ma bqach y9der ydkhol 🔒`;
         case 'create_personal_voice_room': return `Safi swebt lik room jdida ${r.mention} w 7rektek liha 🔊`;
         case 'skip_music': return `Safi skipt l-ghnya ⏭️`;
         case 'stop_music': return `Safi w9eft l-music ⏹️`;
@@ -464,6 +468,41 @@ function formatToolSummary(executedTools) {
         default: return `Safi t-dar l-action **${name}** ✅`;
       }
     }).join('\n');
+}
+
+function getDirectChannelIntent(text, message) {
+  const input = text.toLowerCase().trim();
+  if (/^(how do i|how can i|how to|kifach|chno ma3na|what is)\b/.test(input)) return null;
+  const hasVoiceScope = /\b(voice|room|room dyali|voice room)\b/.test(input);
+  if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room)\b/.test(input)) {
+    return { name: 'create_personal_voice_room', args: {} };
+  }
+  const lock = /\b(lock|close|ssed|sedd|sdd|7bes)\b/.test(input);
+  const unlock = /\b(open|unlock|t?7ol|t?7ell|t?7el|t?7oul)\b/.test(input);
+  if ((lock || unlock) && /\b(tap|chat|channel|voice|room)\b/.test(input)) {
+    return { name: 'manage_current_channel', args: { action: lock ? 'lock' : 'unlock', scope: hasVoiceScope ? 'voice' : 'text' } };
+  }
+
+  const callerRoom = message.member?.voice?.channel;
+  const ownsCurrentRoom = callerRoom && isVoiceRoomOwner(message.member, callerRoom);
+  if (/\b(rename|bdel|bddel|change name|change the name)\b/.test(input)
+    && (/\b(room|voice|smit|smiya)\b/.test(input) || ownsCurrentRoom)) {
+    const patterns = [
+      /\brename\s+(?:my\s+)?(?:voice\s+)?room\s+(?:to\s+)?(.+)$/i,
+      /\bchange\s+(?:the\s+)?name\s+(?:of\s+(?:my\s+)?(?:voice\s+)?room\s+)?(?:to\s+)?(.+)$/i,
+      /\bb(?:d|dd)el\s+(?:smit|smiya)\s+(?:l-?)?(?:room|voice)?\s*(?:l|to|:)?\s*(.+)$/i,
+    ];
+    const match = patterns.map(pattern => input.match(pattern)).find(Boolean);
+    if (match?.[1]?.trim()) return { name: 'rename_voice_room', args: { name: match[1].trim().replace(/["'`]/g, '') } };
+  }
+
+  if (/\b(reject|kick|remove|tred|tayr|khrrej)\b/.test(input)) {
+    const target = message.mentions.members.find(member => member.id !== client.user.id);
+    if (!target && !/\b(room|voice|member|user|person)\b/.test(input)) return null;
+    if (target) return { name: 'reject_voice_member', args: { target_user: target.id } };
+    return { name: 'reject_voice_member', args: {} };
+  }
+  return null;
 }
 
 function checkRoleManagementPermissions(caller, role, guild) {
@@ -491,13 +530,18 @@ function canManageChannels(caller) {
   return (STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID)) || caller.permissions.has(PermissionsBitField.Flags.Administrator) || caller.permissions.has(PermissionsBitField.Flags.ManageChannels);
 }
 
+function isVoiceRoomOwner(caller, channel) {
+  return roomOwners.get(channel.id) === caller.id
+    || (channel.name.startsWith('🔊 ') && channel.permissionOverwrites.cache.get(caller.id)?.allow.has(PermissionsBitField.Flags.ManageChannels));
+}
+
 function canManageRoles(caller) {
   return (STAFF_ROLE_ID && caller.roles.cache.has(STAFF_ROLE_ID)) || caller.permissions.has(PermissionsBitField.Flags.Administrator) || caller.permissions.has(PermissionsBitField.Flags.ManageRoles);
 }
 
 async function executeDiscordTool(name, args, message) {
   const caller = message.member;
-  const noTargetTools = ['create_channel', 'manage_current_channel', 'create_personal_voice_room', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
+  const noTargetTools = ['create_channel', 'manage_current_channel', 'rename_voice_room', 'create_personal_voice_room', 'create_role', 'move_all_members', 'move_members', 'dm_members', 'start_verification', 'join_voice', 'play_music', 'skip_music', 'stop_music', 'leave_music', 'delete_channel', 'delete_role'];
 
   let targetMember = null;
   if (!noTargetTools.includes(name)) {
@@ -567,9 +611,7 @@ async function executeDiscordTool(name, args, message) {
     if (scope === 'voice') {
       const voiceChannel = caller.voice.channel;
       if (!voiceChannel) return { success: false, error: 'Dkhol l voice room li bghiti t7kem fih.' };
-      const isRoomOwner = roomOwners.get(voiceChannel.id) === caller.id
-        || (voiceChannel.name.startsWith('🔊 ') && voiceChannel.permissionOverwrites.cache.get(caller.id)?.allow.has(PermissionsBitField.Flags.ManageChannels));
-      if (!isRoomOwner && !canManageChannels(caller)) return { success: false, error: 'T9der t7kem ghir f room dyalk, aw khassek permission dyal staff.' };
+      if (!isVoiceRoomOwner(caller, voiceChannel) && !canManageChannels(caller)) return { success: false, error: 'T9der t7kem ghir f room dyalk, aw khassek permission dyal staff.' };
       try {
         await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: action === 'lock' ? false : null });
         return { success: true, action, scope: 'voice', channel: voiceChannel.name };
@@ -579,10 +621,22 @@ async function executeDiscordTool(name, args, message) {
     if (!canManageChannels(caller)) return { success: false, error: 'Khassek permission dyal Manage Channels bach t7kem f text channel.' };
     const textChannel = message.channel;
     if (!textChannel.permissionOverwrites) return { success: false, error: 'Ma n9drch nlocki had no3 dyal channel.' };
+    let everyoneUpdated = false;
     try {
       await textChannel.permissionOverwrites.edit(message.guild.id, { SendMessages: action === 'lock' ? false : null });
+      everyoneUpdated = true;
+      if (action === 'lock') {
+        await textChannel.permissionOverwrites.edit(client.user.id, {
+          ViewChannel: true,
+          SendMessages: true,
+          ReadMessageHistory: true,
+        });
+      }
       return { success: true, action, scope: 'text', channel: textChannel.name, channelId: textChannel.id };
-    } catch (err) { return { success: false, error: err.message }; }
+    } catch (err) {
+      if (action === 'lock' && everyoneUpdated) await textChannel.permissionOverwrites.edit(message.guild.id, { SendMessages: null }).catch(() => {});
+      return { success: false, error: err.message };
+    }
   }
 
   if (name === 'create_personal_voice_room') {
@@ -590,6 +644,38 @@ async function executeDiscordTool(name, args, message) {
     try {
       const channel = await createPersonalVoiceRoom(message.guild, caller);
       return { success: true, name: channel.name, mention: `<#${channel.id}>`, user: caller.displayName };
+    } catch (err) { return { success: false, error: err.message }; }
+  }
+
+  if (name === 'rename_voice_room') {
+    const voiceChannel = caller.voice.channel;
+    if (!voiceChannel) return { success: false, error: 'Dkhol l voice room dyalk lwl.' };
+    if (!isVoiceRoomOwner(caller, voiceChannel) && !canManageChannels(caller)) return { success: false, error: 'T9der tbdel smit ghir room dyalk, aw khassek permission dyal staff.' };
+    const requestedName = String(args.name || '').replace(/[\r\n]/g, ' ').replace(/^🔊\s*/, '').trim();
+    if (!requestedName) return { success: false, error: '3tini smiya jdida dyal room.' };
+    try {
+      const name = `🔊 ${requestedName}`.slice(0, 100);
+      await voiceChannel.setName(name);
+      return { success: true, name: voiceChannel.name };
+    } catch (err) { return { success: false, error: err.message }; }
+  }
+
+  if (name === 'reject_voice_member') {
+    const voiceChannel = caller.voice.channel;
+    if (!voiceChannel) return { success: false, error: 'Dkhol l voice room dyalk lwl.' };
+    if (!isVoiceRoomOwner(caller, voiceChannel) && !canManageChannels(caller)) return { success: false, error: 'T9der t-rejecti ghir f room dyalk, aw khassek permission dyal staff.' };
+    if (!targetMember) return { success: false, error: 'Mentionni l-member li bghiti t-rejecti.' };
+    if (targetMember.id === caller.id) return { success: false, error: 'Ma t9drch t-rejecti rassek 😅' };
+    if (targetMember.voice.channelId !== voiceChannel.id) return { success: false, error: 'Had member ma kaynach f room dyalk.' };
+    try {
+      await voiceChannel.permissionOverwrites.edit(targetMember.id, { Connect: false });
+      try {
+        await targetMember.voice.setChannel(null);
+      } catch (err) {
+        await voiceChannel.permissionOverwrites.edit(targetMember.id, { Connect: null }).catch(() => {});
+        throw err;
+      }
+      return { success: true, user: targetMember.displayName, mention: `<@${targetMember.id}>`, channel: voiceChannel.name };
     } catch (err) { return { success: false, error: err.message }; }
   }
 
@@ -742,6 +828,15 @@ client.on('messageCreate', async (message) => {
     if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al 🙂');
     if (promptText.length > AI_MAX_QUESTION_CHARS) return message.reply(`Sou2al twil bzaf 😅 7awel tkhtasro l ${AI_MAX_QUESTION_CHARS} 7arf.`);
 
+    // Handle clear channel controls deterministically so the bot cannot claim
+    // success based on generated text without actually changing Discord state.
+    const directIntent = getDirectChannelIntent(promptText, message);
+    if (directIntent) {
+      const toolResult = await executeDiscordTool(directIntent.name, directIntent.args, message);
+      const confirmation = formatToolSummary([{ name: directIntent.name, result: toolResult }]);
+      return message.reply({ content: confirmation, allowedMentions: { parse: [] } });
+    }
+
     const now = Date.now();
     for (const [userId, timestamp] of aiUserCooldowns) {
       if (now - timestamp >= AI_COOLDOWN_MS) aiUserCooldowns.delete(userId);
@@ -773,7 +868,7 @@ client.on('messageCreate', async (message) => {
 Always reply in Moroccan Darija written with Latin letters/Arabizi (like "salam cv", "a sat", "wa3er"); never use Arabic script. Sound casual and human, not formal or robotic. Keep normal replies short (usually 1-2 sentences), use a quick joke when it fits, and don't force jokes into serious conversations.
 Be charming and use light, respectful flirting only when the other person clearly invites that vibe. Never assume someone's gender, pressure them, or make sexual comments about real people.
 You may use casual Darija profanity sparingly as playful, situation-directed banter (for example, "sir t9wad" about a frustrating situation or your own mistake). Never direct insults, humiliation, slurs, or profanity at a server member; soften it if the context is unclear.
-When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel; use scope voice only when they explicitly mean their current voice room. Lock/open text channels only for members with Manage Channels/staff permission; voice-room owners can control their own room. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests.
+When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel; use scope voice only when they explicitly mean their current voice room. Lock/open text channels only for members with Manage Channels/staff permission; voice-room owners can control their own room. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Use rename_voice_room to change the caller's current room name, and reject_voice_member to deny a mentioned member entry and disconnect them from that room. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests. Never say an action succeeded unless its tool result is success.
 Use the provided Discord tools when asked to perform an action. For regular chat, answer directly.`;
 
     let streamedMessage = null;
@@ -971,6 +1066,20 @@ Use the provided Discord tools when asked to perform an action. For regular chat
     }
     else if (command === 'lock') { await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: false }); message.reply('🔒 Room locked.'); }
     else if (command === 'unlock') { await voiceChannel.permissionOverwrites.edit(message.guild.id, { Connect: null }); message.reply('🔓 Room unlocked.'); }
+    else if (command === 'reject') {
+      const target = await findTargetMember(message.guild, args.slice(1).join(' '), message.mentions, client.user.id);
+      if (!target) return message.reply('❌ Mention l-member li bghiti t-rejecti.');
+      if (target.id === message.author.id) return message.reply('❌ Ma t9drch t-rejecti rassek.');
+      if (target.voice.channelId !== voiceChannel.id) return message.reply('❌ Had member ma kaynach f room dyalk.');
+      await voiceChannel.permissionOverwrites.edit(target.id, { Connect: false });
+      try {
+        await target.voice.setChannel(null);
+      } catch (err) {
+        await voiceChannel.permissionOverwrites.edit(target.id, { Connect: null }).catch(() => {});
+        throw err;
+      }
+      message.reply(`✅ Khrejt ${target} mn room dyalk w seddt 3lih dkhoul.`);
+    }
     else if (command === 'limit') {
       const limit = Number(args[0]);
       if (!Number.isInteger(limit) || limit < 0 || limit > 99) return message.reply('❌ L-limit khaso ykon bin 0 w 99.');
