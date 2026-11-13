@@ -35,11 +35,12 @@ try { YouTubePlugin = require('@distube/youtube').YouTubePlugin; } catch (e) { c
 try { YtDlpPlugin = require('@distube/yt-dlp').YtDlpPlugin; } catch (e) { console.error(`[Music] Could not load yt-dlp plugin: ${e.message}`); }
 try { SoundCloudPlugin = require('@distube/soundcloud').SoundCloudPlugin; } catch (e) { console.warn(`[Music] SoundCloud plugin unavailable: ${e.message}`); }
 
-// Use YouTube as the main text-search source, keep SoundCloud as another
-// searchable provider, and leave yt-dlp last for links it can extract.
+// Railway's YouTube requests can be blocked with BOT_CHECK, so prefer
+// SoundCloud for searches. Keep YouTube as a second search source and yt-dlp
+// last for links it can extract.
 const plugins = [];
-if (YouTubePlugin) plugins.push(new YouTubePlugin());
 if (SoundCloudPlugin) plugins.push(new SoundCloudPlugin());
+if (YouTubePlugin) plugins.push(new YouTubePlugin());
 if (YtDlpPlugin) plugins.push(new YtDlpPlugin());
 
 const client = new Client({
