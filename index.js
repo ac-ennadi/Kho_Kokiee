@@ -148,6 +148,11 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || null;
 // AI Setup: Dynamically fetch REAL Gemini models (Fixes the 503 loop of death)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+// Voice replies use the existing Gemini key and can be tuned or disabled per deployment.
+const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-lite-tts';
+const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || 'Kore';
+const VOICE_TTS_ENABLED = process.env.VOICE_TTS_ENABLED !== 'false';
+const voiceReplyLocks = new Set();
 let availableModelsCache = [];
 let genAI = null;
 if (GEMINI_API_KEY) {
@@ -192,6 +197,110 @@ function getModelCandidates() {
 
 // Warm the model cache during startup without blocking Discord events or replies.
 if (GEMINI_API_KEY) fetchSupportedModels().catch(() => {});
+
+function makePcmWav(pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28);
+  header.writeUInt16LE(channels * bitsPerSample / 8, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+async function speakVoiceReply(message, text) {
+  if (!VOICE_TTS_ENABLED || !GEMINI_API_KEY || !distube || !message.guild) return;
+  const voiceChannel = message.member?.voice?.channel || message.guild.members.me?.voice?.channel;
+  if (!voiceChannel) return; // Text-only use stays text-only; no unexpected joining.
+  if (distube.getQueue(message.guild)) {
+    console.log(`[Voice TTS] Skipping reply in ${message.guild.id}: music is playing.`);
+    return;
+  }
+  if (voiceReplyLocks.has(message.guild.id)) return;
+
+  let player;
+  let connection;
+  let idleHandler;
+  let errorHandler;
+  const guildId = message.guild.id;
+  voiceReplyLocks.add(guildId);
+
+  try {
+    const { createAudioPlayer, createAudioResource, getVoiceConnection, StreamType,
+      AudioPlayerStatus, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
+    await distube.voices.join(voiceChannel);
+    connection = getVoiceConnection(guildId);
+    if (!connection) throw new Error('Discord voice connection was not available after joining.');
+    await entersState(connection, VoiceConnectionStatus.Ready, 8000);
+
+    // Keep spoken answers short so they are quick and use fewer TTS tokens.
+    const spokenText = text.replace(/<@!?\d+>/g, '').slice(0, 240).trim();
+    if (!spokenText) return;
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(15000),
+        body: JSON.stringify({
+          contents: [{ parts: [{
+            text: `Say these words exactly in Moroccan Darija, with a natural Moroccan accent. The text uses Latin-letter Darija transliteration; pronounce it as spoken Darija. Do not translate it or add words:\n${spokenText}`,
+            speechMetadata: { style: 'natural, friendly Moroccan Darija pronunciation, conversational pace' },
+          }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_TTS_VOICE } } },
+          },
+        }),
+      },
+    );
+    if (!response.ok) throw new Error(`Gemini TTS returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    const data = await response.json();
+    const audioPart = data.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data);
+    if (!audioPart) throw new Error('Gemini TTS response did not include audio.');
+
+    const audioBuffer = Buffer.from(audioPart.inlineData.data, 'base64');
+    const wavBuffer = audioPart.inlineData.mimeType?.includes('wav')
+      ? audioBuffer
+      : makePcmWav(audioBuffer);
+    // Arbitrary input lets discord.js convert the WAV to Discord's voice
+    // format via the FFmpeg installation already used by music playback.
+    const resource = createAudioResource(require('node:stream').Readable.from(wavBuffer), {
+      inputType: StreamType.Arbitrary,
+    });
+    player = createAudioPlayer();
+    connection.subscribe(player);
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        player.off(AudioPlayerStatus.Idle, idleHandler);
+        player.off('error', errorHandler);
+        err ? reject(err) : resolve();
+      };
+      idleHandler = () => finish();
+      errorHandler = error => finish(error);
+      player.once(AudioPlayerStatus.Idle, idleHandler);
+      player.once('error', errorHandler);
+      player.play(resource);
+    });
+  } catch (error) {
+    console.warn(`[Voice TTS] Could not speak reply: ${error.message}`);
+  } finally {
+    if (player) player.stop(true);
+    voiceReplyLocks.delete(guildId);
+  }
+}
 
 const aiUserCooldowns = new Map();
 const AI_COOLDOWN_MS = 2000;
@@ -1033,6 +1142,10 @@ Use the provided Discord tools only for actions the current user clearly request
       } else {
         await message.reply({ content: responseText, allowedMentions: { parse: [] } });
       }
+      // The AI response remains instant in text; voice generation runs separately.
+      speakVoiceReply(message, responseText).catch(error =>
+        console.warn(`[Voice TTS] Background speech failed: ${error.message}`),
+      );
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
       aiUserCooldowns.delete(message.author.id);
