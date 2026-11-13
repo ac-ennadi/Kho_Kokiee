@@ -162,7 +162,10 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 // Voice replies use the existing Gemini key and can be tuned or disabled per deployment.
 const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-lite-tts';
-const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || 'Kore';
+const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || 'Fenrir';
+const AZURE_SPEECH_KEY = process.env.AZURE_SPEECH_KEY;
+const AZURE_SPEECH_REGION = process.env.AZURE_SPEECH_REGION;
+const AZURE_SPEECH_VOICE = process.env.AZURE_SPEECH_VOICE || 'ar-MA-JamalNeural';
 const VOICE_TTS_ENABLED = process.env.VOICE_TTS_ENABLED !== 'false';
 const voiceReplyLocks = new Set();
 const voiceConversationLocks = new Set();
@@ -235,7 +238,7 @@ function makePcmWav(pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
 }
 
 async function speakVoiceReply(message, text) {
-  if (!VOICE_TTS_ENABLED || !GEMINI_API_KEY || !distube || !message.guild) return false;
+  if (!VOICE_TTS_ENABLED || (!GEMINI_API_KEY && !(AZURE_SPEECH_KEY && AZURE_SPEECH_REGION)) || !distube || !message.guild) return false;
   const voiceChannel = message.member?.voice?.channel || message.guild.members.me?.voice?.channel;
   if (!voiceChannel) return false; // Text-only use stays text-only; no unexpected joining.
   if (distube.getQueue(message.guild)) {
@@ -272,42 +275,68 @@ async function speakVoiceReply(message, text) {
     // Keep spoken answers short so they are quick and use fewer TTS tokens.
     const spokenText = text.replace(/<@!?\d+>/g, '').slice(0, 240).trim();
     if (!spokenText) return;
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(15000),
-        body: JSON.stringify({
-          contents: [{ parts: [{
-            // TTS recites the text field verbatim; keep all directions in
-            // speechMetadata so it never reads the instructions aloud.
-            text: spokenText,
-            speechMetadata: { style: 'natural, friendly Moroccan Darija pronunciation, conversational pace' },
-          }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: { voiceConfig: { voice: GEMINI_TTS_VOICE } },
+    let wavBuffer = null;
+    const providerErrors = [];
+    if (AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
+      try {
+        const safeText = spokenText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        const ssml = `<speak version="1.0" xml:lang="ar-MA"><voice name="${AZURE_SPEECH_VOICE}" xml:lang="ar-MA">${safeText}</voice></speak>`;
+        const azureResponse = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+          method: 'POST',
+          headers: {
+            'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
+            'Content-Type': 'application/ssml+xml',
+            'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',
+            'User-Agent': 'KhoKokieeDiscordBot',
           },
-        }),
-      },
-    );
-    if (!response.ok) {
-      const errorDetails = (await response.text()).slice(0, 300);
-      if (response.status === 429) {
-        // Avoid hammering an exhausted TTS quota on every voice utterance.
-        voiceTtsQuotaBackoffUntil = Date.now() + 60 * 60 * 1000;
+          body: ssml,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!azureResponse.ok) throw new Error(`Azure Speech returned HTTP ${azureResponse.status}: ${(await azureResponse.text()).slice(0, 250)}`);
+        wavBuffer = Buffer.from(await azureResponse.arrayBuffer());
+        console.log(`[Voice TTS] Synthesized reply with Azure voice ${AZURE_SPEECH_VOICE}.`);
+      } catch (error) {
+        providerErrors.push(error.message);
+        console.warn(`[Voice TTS] Azure provider failed; trying Gemini fallback: ${error.message}`);
       }
-      throw new Error(`Gemini TTS returned HTTP ${response.status}: ${errorDetails}`);
     }
-    const data = await response.json();
-    const audioPart = data.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data);
-    if (!audioPart) throw new Error('Gemini TTS response did not include audio.');
 
-    const audioBuffer = Buffer.from(audioPart.inlineData.data, 'base64');
-    const wavBuffer = audioPart.inlineData.mimeType?.includes('wav')
-      ? audioBuffer
-      : makePcmWav(audioBuffer);
+    if (!wavBuffer && GEMINI_API_KEY && Date.now() >= voiceTtsQuotaBackoffUntil) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(15000),
+            body: JSON.stringify({
+              contents: [{ parts: [{
+                text: spokenText,
+                speechMetadata: { style: 'natural, friendly Moroccan Darija pronunciation, conversational pace' },
+              }] }],
+              generationConfig: {
+                responseModalities: ['AUDIO'],
+                speechConfig: { voiceConfig: { voice: GEMINI_TTS_VOICE } },
+              },
+            }),
+          },
+        );
+        if (!response.ok) {
+          const errorDetails = (await response.text()).slice(0, 300);
+          if (response.status === 429) voiceTtsQuotaBackoffUntil = Date.now() + 60 * 60 * 1000;
+          throw new Error(`Gemini TTS returned HTTP ${response.status}: ${errorDetails}`);
+        }
+        const data = await response.json();
+        const audioPart = data.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data);
+        if (!audioPart) throw new Error('Gemini TTS response did not include audio.');
+        const audioBuffer = Buffer.from(audioPart.inlineData.data, 'base64');
+        wavBuffer = audioPart.inlineData.mimeType?.includes('wav') ? audioBuffer : makePcmWav(audioBuffer);
+        console.log(`[Voice TTS] Synthesized reply with Gemini voice ${GEMINI_TTS_VOICE}.`);
+      } catch (error) {
+        providerErrors.push(error.message);
+      }
+    }
+    if (!wavBuffer) throw new Error(providerErrors.join(' | ') || 'No TTS provider is configured or its quota is unavailable.');
     // Arbitrary input lets discord.js convert the WAV to Discord's voice
     // format via the FFmpeg installation already used by music playback.
     const resource = createAudioResource(require('node:stream').Readable.from(wavBuffer), {
