@@ -237,7 +237,28 @@ function makePcmWav(pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
   return Buffer.concat([header, pcm]);
 }
 
-async function speakVoiceReply(message, text) {
+async function toMoroccanArabicScript(text) {
+  if (!GEMINI_API_KEY || !text || /[\u0600-\u06FF]/.test(text)) return text;
+  const model = getModelCandidates()[0];
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(8000),
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `Rewrite this Moroccan Darija sentence in Arabic script for a Moroccan Arabic voice to speak. Preserve the same Darija words, meaning, and casual tone; transliterate the script, do not translate it into formal Arabic, add wording, or explain. Return only the Arabic-script sentence:\n${text.slice(0, 240)}` }] }],
+        generationConfig: { maxOutputTokens: 90, temperature: 0.1 },
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`Darija speech transliteration returned HTTP ${response.status}.`);
+  const data = await response.json();
+  const arabicText = (data.candidates?.[0]?.content?.parts || []).map(part => part.text || '').join(' ').trim();
+  return /[\u0600-\u06FF]/.test(arabicText) ? arabicText : text;
+}
+
+async function speakVoiceReply(message, text, speechTextArabic = null) {
   if (!VOICE_TTS_ENABLED || (!GEMINI_API_KEY && !(AZURE_SPEECH_KEY && AZURE_SPEECH_REGION)) || !distube || !message.guild) return false;
   const voiceChannel = message.member?.voice?.channel || message.guild.members.me?.voice?.channel;
   if (!voiceChannel) return false; // Text-only use stays text-only; no unexpected joining.
@@ -279,7 +300,12 @@ async function speakVoiceReply(message, text) {
     const providerErrors = [];
     if (AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
       try {
-        const safeText = spokenText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        let azureText = String(speechTextArabic || '').trim();
+        if (!/[\u0600-\u06FF]/.test(azureText)) {
+          try { azureText = await toMoroccanArabicScript(spokenText); }
+          catch (error) { console.warn(`[Voice TTS] Could not transliterate Darija for Azure: ${error.message}`); azureText = spokenText; }
+        }
+        const safeText = azureText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
         const ssml = `<speak version="1.0" xml:lang="ar-MA"><voice name="${AZURE_SPEECH_VOICE}" xml:lang="ar-MA">${safeText}</voice></speak>`;
         const azureResponse = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
           method: 'POST',
@@ -479,10 +505,10 @@ async function answerVoiceUtterance(guild, member, pcm) {
       signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: `You are Kho Kokiee in a Discord voice channel. Do not use a wake word, bot name, or special trigger. Decide from what the person says and the recent context whether they are talking to you. If they ask you a question, give you a request, greet you, or continue a recent exchange with you, mark addressed=true. Mark addressed=false only when it is clearly conversation between other people or unrelated background speech. If unclear, favor answering when the utterance sounds like a question or follows your last reply. Return only JSON with exactly these fields: {"addressed": boolean, "transcript": "short transcript of the speaker", "reply": "one short reply in Moroccan Darija written with Latin letters (Arabizi), like salam cv; empty when addressed is false"}. ${contextInstruction} Speaker: ${member.displayName}.` },
+          { text: `You are Kho Kokiee in a Discord voice channel. Do not use a wake word, bot name, or special trigger. Decide from what the person says and the recent context whether they are talking to you. If they ask you a question, give you a request, greet you, or continue a recent exchange with you, mark addressed=true. Mark addressed=false only when it is clearly conversation between other people or unrelated background speech. If unclear, favor answering when the utterance sounds like a question or follows your last reply. Return only JSON with exactly these fields: {"addressed": boolean, "transcript": "short transcript of the speaker", "reply": "one short reply in Moroccan Darija written with Latin letters (Arabizi), like salam cv; empty when addressed is false", "speech_text_ar": "the same reply in Moroccan Darija written in Arabic script for speech, empty when addressed is false"}. Keep reply in Latin letters and speech_text_ar in Arabic script; preserve the same Darija meaning and casual wording in both. ${contextInstruction} Speaker: ${member.displayName}.` },
           { inlineData: { mimeType: 'audio/wav', data: makePcmWav(pcm, 48000, 2).toString('base64') } },
         ] }],
-        generationConfig: { maxOutputTokens: 120, temperature: 0.4, responseMimeType: 'application/json' },
+        generationConfig: { maxOutputTokens: 180, temperature: 0.4, responseMimeType: 'application/json' },
       }),
     },
   );
@@ -509,6 +535,7 @@ async function answerVoiceUtterance(guild, member, pcm) {
   }
   let answer = String(result.reply || '').trim().slice(0, 240);
   if (!answer) throw new Error('Gemini returned no answer for the voice message.');
+  const speechTextArabic = String(result.speech_text_ar || '').trim().slice(0, 300);
   const transcript = String(result.transcript || '').trim().slice(0, 240);
   const voiceIntent = getVoiceCommandIntent(transcript);
   if (voiceIntent) {
@@ -538,7 +565,7 @@ async function answerVoiceUtterance(guild, member, pcm) {
   // completion check settles. Keep failures in logs instead of sending a
   // misleading text warning after the audible answer.
   const speechActionConflicts = voiceIntent?.name === 'play_music' || voiceIntent?.name === 'leave_music';
-  if (!speechActionConflicts) await speakVoiceReply({ guild, member, channel: textChannel }, answer);
+  if (!speechActionConflicts) await speakVoiceReply({ guild, member, channel: textChannel }, answer, voiceIntent ? null : speechTextArabic);
 }
 
 const aiUserCooldowns = new Map();
