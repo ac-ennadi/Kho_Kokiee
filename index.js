@@ -169,6 +169,8 @@ const voiceConversationLocks = new Set();
 const voiceListeners = new Map();
 const voiceReplyChannels = new Map();
 const voiceDialogContexts = new Map();
+let voiceTtsQuotaBackoffUntil = 0;
+let lastVoiceTtsQuotaNoticeAt = 0;
 let availableModelsCache = [];
 let genAI = null;
 if (GEMINI_API_KEY) {
@@ -241,6 +243,7 @@ async function speakVoiceReply(message, text) {
     return false;
   }
   if (voiceReplyLocks.has(message.guild.id)) return false;
+  if (Date.now() < voiceTtsQuotaBackoffUntil) return false;
 
   let player;
   let connection;
@@ -289,7 +292,14 @@ async function speakVoiceReply(message, text) {
         }),
       },
     );
-    if (!response.ok) throw new Error(`Gemini TTS returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    if (!response.ok) {
+      const errorDetails = (await response.text()).slice(0, 300);
+      if (response.status === 429) {
+        // Avoid hammering an exhausted TTS quota on every voice utterance.
+        voiceTtsQuotaBackoffUntil = Date.now() + 60 * 60 * 1000;
+      }
+      throw new Error(`Gemini TTS returned HTTP ${response.status}: ${errorDetails}`);
+    }
     const data = await response.json();
     const audioPart = data.candidates?.[0]?.content?.parts?.find(part => part.inlineData?.data);
     if (!audioPart) throw new Error('Gemini TTS response did not include audio.');
@@ -332,6 +342,12 @@ async function speakVoiceReply(message, text) {
     spoken = true;
   } catch (error) {
     console.warn(`[Voice TTS] Could not speak reply: ${error.message}`);
+    if (/HTTP 429/.test(error.message)) {
+      if (Date.now() - lastVoiceTtsQuotaNoticeAt > 60 * 60 * 1000 && message.channel?.isTextBased()) {
+        lastVoiceTtsQuotaNoticeAt = Date.now();
+        message.channel.send('Sout dyali wa9ef daba 7it Gemini TTS quota salat; ljawab kaybqa yban f chat.').catch(() => {});
+      }
+    }
   } finally {
     if (player && player.state.status !== 'idle') player.stop(true);
     voiceReplyLocks.delete(guildId);
@@ -462,9 +478,25 @@ async function answerVoiceUtterance(guild, member, pcm) {
     console.log(`[Voice Listen] Ignored speech not addressed to the bot in ${guild.id}.`);
     return;
   }
-  const answer = String(result.reply || '').trim().slice(0, 240);
+  let answer = String(result.reply || '').trim().slice(0, 240);
   if (!answer) throw new Error('Gemini returned no answer for the voice message.');
   const transcript = String(result.transcript || '').trim().slice(0, 240);
+  const voiceIntent = getVoiceCommandIntent(transcript);
+  if (voiceIntent) {
+    const textChannel = voiceReplyChannels.get(guild.id) || guild.systemChannel;
+    const commandMessage = {
+      guild,
+      member,
+      author: member.user,
+      client,
+      channel: textChannel,
+      content: transcript,
+      mentions: { members: { find: () => undefined } },
+    };
+    const toolResult = await executeDiscordTool(voiceIntent.name, voiceIntent.args, commandMessage);
+    console.log(`[Voice Tool] ${voiceIntent.name} from ${member.displayName}: ${toolResult.success ? 'succeeded' : `failed: ${toolResult.error}`}`);
+    answer = formatToolSummary([{ name: voiceIntent.name, result: toolResult }]).slice(0, 240);
+  }
   voiceDialogContexts.set(contextKey, {
     expiresAt: Date.now() + 2 * 60 * 1000,
     turns: [...recentTurns, ...(transcript ? [{ role: 'User', text: transcript }] : []), { role: 'Kho Kokiee', text: answer }].slice(-6),
@@ -476,7 +508,8 @@ async function answerVoiceUtterance(guild, member, pcm) {
   // Playback can succeed even when DisTube changes player state before the
   // completion check settles. Keep failures in logs instead of sending a
   // misleading text warning after the audible answer.
-  await speakVoiceReply({ guild, member, channel: textChannel }, answer);
+  const speechActionConflicts = voiceIntent?.name === 'play_music' || voiceIntent?.name === 'leave_music';
+  if (!speechActionConflicts) await speakVoiceReply({ guild, member, channel: textChannel }, answer);
 }
 
 const aiUserCooldowns = new Map();
@@ -770,6 +803,37 @@ function formatToolSummary(executedTools) {
         default: return `Safi t-dar l-action **${name}** ✅`;
       }
     }).join('\n');
+}
+
+function getVoiceCommandIntent(text) {
+  const input = String(text || '').toLowerCase().replace(/[.,!?]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!input || /^(how|how do i|how can i|kifach|wach n9der|chno ma3na)\b/.test(input)) return null;
+  const hasChannel = /\b(tap|voice|room|channel)\b/.test(input);
+  const lock = /\b(lock|close|sedd|ssed|sdd|7bes)\b/.test(input);
+  const unlock = /\b(open|unlock|7ol|7ell|7el|7oul|7oul|7oul|7ellih)\b/.test(input);
+
+  if (hasChannel && lock) return { name: 'manage_current_channel', args: { action: 'lock', scope: 'voice' } };
+  if (hasChannel && (unlock || (/\b(join|dkhol|d5ol)\b/.test(input) && /\btap\b/.test(input)))) {
+    return { name: 'manage_current_channel', args: { action: 'unlock', scope: 'voice' } };
+  }
+  if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room|channel)\b/.test(input)) {
+    return { name: 'create_personal_voice_room', args: {} };
+  }
+  if (/\b(join|dkhol|d5ol)\b/.test(input) && /\b(voice|room|channel)\b/.test(input) && !/\btap\b/.test(input)) {
+    return { name: 'join_voice', args: { channel: 'here' } };
+  }
+  if (/\b(rename|change name|bdel|bddel)\b/.test(input) && /\b(room|voice|smit|smiya)\b/.test(input)) {
+    const match = input.match(/\b(?:to|as|smit|smiya)\s+(.+)$/);
+    if (match?.[1]) return { name: 'rename_voice_room', args: { name: match[1].trim() } };
+  }
+  if (/\b(play|playi|shghl|chghl)\b/.test(input) && /\b(music|song|track|ghnya|music)\b/.test(input)) {
+    const query = input.replace(/^.*?\b(?:music|song|track|ghnya)\b\s*/, '').trim();
+    if (query) return { name: 'play_music', args: { query } };
+  }
+  if (/\b(skip|next|doz)\b/.test(input) && /\b(music|song|track|ghnya)\b/.test(input)) return { name: 'skip_music', args: {} };
+  if (/\b(stop|wa9ef|w9ef)\b/.test(input) && /\b(music|song|track|ghnya)\b/.test(input)) return { name: 'stop_music', args: {} };
+  if (/\b(leave|khrej|khrrej)\b/.test(input) && /\b(voice|music|room|channel)\b/.test(input)) return { name: 'leave_music', args: {} };
+  return null;
 }
 
 function getDirectChannelIntent(text, message) {
