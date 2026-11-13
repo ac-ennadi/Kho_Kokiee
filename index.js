@@ -245,6 +245,7 @@ async function speakVoiceReply(message, text) {
   let connection;
   let idleHandler;
   let errorHandler;
+  let playingHandler;
   let spoken = false;
   const guildId = message.guild.id;
   voiceReplyLocks.add(guildId);
@@ -252,6 +253,11 @@ async function speakVoiceReply(message, text) {
   try {
     const { createAudioResource, StreamType,
       AudioPlayerStatus, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
+    const botMember = message.guild.members.me;
+    const voicePermissions = botMember && voiceChannel.permissionsFor(botMember);
+    if (!voicePermissions?.has(PermissionsBitField.Flags.Speak)) {
+      throw new Error(`Bot is missing Speak permission in voice channel ${voiceChannel.id}.`);
+    }
     await distube.voices.join(voiceChannel, { selfDeaf: false });
     const voice = distube.voices.get(guildId);
     connection = voice?.connection;
@@ -310,12 +316,15 @@ async function speakVoiceReply(message, text) {
         if (settled) return;
         settled = true;
         player.off(AudioPlayerStatus.Idle, idleHandler);
+        player.off(AudioPlayerStatus.Playing, playingHandler);
         player.off('error', errorHandler);
         err ? reject(err) : resolve();
       };
       idleHandler = () => finish();
+      playingHandler = () => console.log(`[Voice TTS] Audio playback started in ${guildId}.`);
       errorHandler = error => finish(error);
       player.once(AudioPlayerStatus.Idle, idleHandler);
+      player.once(AudioPlayerStatus.Playing, playingHandler);
       player.once('error', errorHandler);
       player.play(resource);
     });
@@ -415,7 +424,7 @@ async function answerVoiceUtterance(guild, member, pcm) {
       signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: `You are Kho Kokiee in a Discord voice channel. First decide whether the speaker is directly calling you by saying "Kho Kokiee", "Kokiee", or "hey bot". If they did not clearly call you by one of those names, output exactly [IGNORE] and nothing else. Do not answer ordinary conversation or speech addressed to another person. If they did call you, answer what they said in one short, natural sentence of Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Do not transcribe their speech. The speaker is ${member.displayName}.` },
+          { text: `You are Kho Kokiee in a Discord voice channel. First decide whether the speaker is directly calling you by saying "Kho Kokiee", "Khokiee", "Kokiee", "Kookie", "hey bot", or by clearly addressing the bot. Accept natural pronunciation and spelling variants. If they did not clearly call you, output exactly [IGNORE] and nothing else. Do not answer ordinary conversation or speech addressed to another person. If they did call you, answer what they said in one short, natural sentence of Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Do not transcribe their speech. The speaker is ${member.displayName}.` },
           { inlineData: { mimeType: 'audio/wav', data: makePcmWav(pcm, 48000, 2).toString('base64') } },
         ] }],
         generationConfig: { maxOutputTokens: 90, temperature: 0.6 },
