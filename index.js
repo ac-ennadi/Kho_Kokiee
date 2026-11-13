@@ -424,7 +424,7 @@ async function answerVoiceUtterance(guild, member, pcm) {
       signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: `You are Kho Kokiee in a Discord voice channel. Decide whether the speaker is addressing you. This includes calling you "Kho Kokiee", "Khokiee", "Kokiee", "Kookie", "hey bot", "a bot", or a natural pronunciation/spelling variant. Also count a direct question or command to the assistant as addressing you, even without saying your name (for example "sma3 lia bot", "jawbni", or "wach kat-sm3ni"). Ignore only speech clearly addressed to someone else or unrelated background conversation. If it is unclear but sounds like a greeting or request to you, answer instead of ignoring it. If you are sure they are not addressing you, output exactly [IGNORE] and nothing else. Otherwise answer naturally in one short sentence of Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Do not transcribe their speech. The speaker is ${member.displayName}.` },
+          { text: `You are Kho Kokiee having a voice conversation in Discord. Do not wait for or detect a wake word, bot name, or special trigger. Treat this speech clip as addressed to you and respond to what the person said. Reply in one short, natural sentence of Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Do not transcribe the speech. The speaker is ${member.displayName}.` },
           { inlineData: { mimeType: 'audio/wav', data: makePcmWav(pcm, 48000, 2).toString('base64') } },
         ] }],
         generationConfig: { maxOutputTokens: 90, temperature: 0.6 },
@@ -439,11 +439,6 @@ async function answerVoiceUtterance(guild, member, pcm) {
     .trim()
     .slice(0, 240);
   if (!answer) throw new Error('Gemini returned no answer for the voice message.');
-  if (answer.toUpperCase().startsWith('[IGNORE]')) {
-    console.log(`[Voice Listen] Ignored speech not addressed to the bot in ${guild.id}.`);
-    return;
-  }
-
   const textChannel = voiceReplyChannels.get(guild.id);
   if (textChannel?.isTextBased()) {
     await textChannel.send({ content: `${member}, ${answer}`, allowedMentions: { parse: [], users: [member.id] } }).catch(() => {});
