@@ -435,10 +435,10 @@ async function answerVoiceUtterance(guild, member, pcm) {
   if (textChannel?.isTextBased()) {
     await textChannel.send({ content: `${member}, ${answer}`, allowedMentions: { parse: [], users: [member.id] } }).catch(() => {});
   }
-  const spoken = await speakVoiceReply({ guild, member, channel: textChannel }, answer);
-  if (!spoken && textChannel?.isTextBased()) {
-    await textChannel.send('Sme7 lia, ma qdertch nhder f voice daba. Chouf permissions w API billing dyal bot.').catch(() => {});
-  }
+  // Playback can succeed even when DisTube changes player state before the
+  // completion check settles. Keep failures in logs instead of sending a
+  // misleading text warning after the audible answer.
+  await speakVoiceReply({ guild, member, channel: textChannel }, answer);
 }
 
 const aiUserCooldowns = new Map();
