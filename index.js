@@ -166,7 +166,8 @@ const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || 'Fenrir';
 const AZURE_SPEECH_KEY = process.env.AZURE_SPEECH_KEY;
 const AZURE_SPEECH_REGION = process.env.AZURE_SPEECH_REGION;
 const AZURE_SPEECH_VOICE = process.env.AZURE_SPEECH_VOICE || 'ar-MA-JamalNeural';
-const HADRA_TTS_URL = process.env.HADRA_TTS_URL || 'https://inkjet-downloads-inserted-pad.trycloudflare.com/v1/tts';
+// HADRA is opt-in: configure a trusted inference endpoint before sending reply text to it.
+const HADRA_TTS_URL = process.env.HADRA_TTS_URL || null;
 const VOICE_TTS_ENABLED = process.env.VOICE_TTS_ENABLED !== 'false';
 const voiceReplyLocks = new Set();
 const voiceConversationLocks = new Set();
