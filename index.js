@@ -813,13 +813,13 @@ function getVoiceCommandIntent(text) {
   const unlock = /\b(open|unlock|7ol|7ell|7el|7oul|7oul|7oul|7ellih)\b/.test(input);
 
   if (hasChannel && lock) return { name: 'manage_current_channel', args: { action: 'lock', scope: 'voice' } };
-  if (hasChannel && (unlock || (/\b(join|dkhol|d5ol)\b/.test(input) && /\btap\b/.test(input)))) {
+  if (hasChannel && (unlock || (/\b(allow|let|khli|khalli)\b/.test(input) && /\b(join|dkhol|dkhal|dkhel|d5ol)\b/.test(input)))) {
     return { name: 'manage_current_channel', args: { action: 'unlock', scope: 'voice' } };
   }
   if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room|channel)\b/.test(input)) {
     return { name: 'create_personal_voice_room', args: {} };
   }
-  if (/\b(join|dkhol|d5ol)\b/.test(input) && /\b(voice|room|channel)\b/.test(input) && !/\btap\b/.test(input)) {
+  if (/\b(join|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\b(tap|voice|room|channel)\b/.test(input)) {
     return { name: 'join_voice', args: { channel: 'here' } };
   }
   if (/\b(rename|change name|bdel|bddel)\b/.test(input) && /\b(room|voice|smit|smiya)\b/.test(input)) {
@@ -847,6 +847,14 @@ function getDirectChannelIntent(text, message) {
   const isInTemporaryRoom = callerRoom && (roomOwners.has(callerRoom.id) || callerRoom.name.startsWith('🔊 '));
   const hasVoiceScope = /\b(voice|room)\b/.test(input) || (isInTemporaryRoom && /\btap\b/.test(input));
   const hasTextScope = /\b(text|chat|text channel)\b/.test(input);
+  if (!hasTextScope && isInTemporaryRoom && /\b(allow|let|khli|khalli)\b/.test(input)
+    && /\b(join|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\btap\b/.test(input)) {
+    return { name: 'manage_current_channel', args: { action: 'unlock', scope: 'voice' } };
+  }
+  if (!hasTextScope && /\b(join|enter|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input)
+    && /\b(tap|voice|room|channel)\b/.test(input)) {
+    return { name: 'join_voice', args: { channel: 'here' } };
+  }
   if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room)\b/.test(input)) {
     return { name: 'create_personal_voice_room', args: {} };
   }
