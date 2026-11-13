@@ -176,6 +176,8 @@ const voiceReplyChannels = new Map();
 const voiceDialogContexts = new Map();
 let voiceTtsQuotaBackoffUntil = 0;
 let lastVoiceTtsQuotaNoticeAt = 0;
+let voiceListenBackoffUntil = 0;
+let lastVoiceListenQuotaNoticeAt = 0;
 let hadraTtsBackoffUntil = 0;
 let availableModelsCache = [];
 let genAI = null;
@@ -442,7 +444,10 @@ function listenInVoiceChannel(guild, connection, replyChannel) {
   if (replyChannel?.isTextBased()) voiceReplyChannels.set(guild.id, replyChannel);
 
   listener.onSpeaking = (userId) => {
-    if (userId === client.user.id || voiceReplyLocks.has(guild.id) || voiceConversationLocks.has(guild.id)) return;
+    if (Date.now() < voiceListenBackoffUntil
+      || userId === client.user.id
+      || voiceReplyLocks.has(guild.id)
+      || voiceConversationLocks.has(guild.id)) return;
     const member = guild.members.cache.get(userId);
     if (!member || member.user.bot || !member.voice.channelId) return;
     if (distube?.getQueue(guild)) return; // Don't transcribe music or consume API while music is playing.
@@ -483,11 +488,22 @@ function listenInVoiceChannel(guild, connection, replyChannel) {
         return;
       }
       answerVoiceUtterance(guild, member, pcm).catch(error => {
-        console.warn(`[Voice Listen] Could not answer: ${error.message}`);
-        const textChannel = voiceReplyChannels.get(guild.id);
-        if (textChannel?.isTextBased()) {
-          textChannel.send('Sme7 lia, ma qdertch nfhem l-hdra. T2ekked men API key w credits dyal bot.').catch(() => {});
+        const now = Date.now();
+        if (error.status === 429) {
+          voiceListenBackoffUntil = now + 60 * 60 * 1000;
+          console.warn('[Voice Listen] Gemini quota exhausted; pausing voice understanding for 1 hour.');
+          if (now - lastVoiceListenQuotaNoticeAt > 60 * 60 * 1000) {
+            lastVoiceListenQuotaNoticeAt = now;
+            const textChannel = voiceReplyChannels.get(guild.id);
+            if (textChannel?.isTextBased()) {
+              textChannel.send('Sme7 lia, quota dyal voice AI salat daba. Ghadi n3awed njarrab mn b3d.').catch(() => {});
+            }
+          }
+          return;
         }
+        if (error.status === 503) voiceListenBackoffUntil = now + 30 * 1000;
+        console.warn(`[Voice Listen] Could not answer: ${error.message}`);
+        if (error.status !== 503) voiceListenBackoffUntil = now + 10 * 1000;
       }).finally(() => voiceConversationLocks.delete(guild.id));
     });
     opusStream.once('error', error => {
@@ -535,7 +551,11 @@ async function answerVoiceUtterance(guild, member, pcm) {
       }),
     },
   );
-  if (!response.ok) throw new Error(`Gemini audio returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  if (!response.ok) {
+    const error = new Error(`Gemini audio returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    error.status = response.status;
+    throw error;
+  }
   const data = await response.json();
   const rawAnswer = (data.candidates?.[0]?.content?.parts || [])
     .map(part => part.text || '')
