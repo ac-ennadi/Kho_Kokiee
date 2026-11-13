@@ -105,10 +105,12 @@ if (distube) {
     // Music can be the first action that joins the bot to voice. Keep the
     // receiver ready so it can answer once playback ends.
     try {
-      const { getVoiceConnection } = require('@discordjs/voice');
       const guild = client.guilds.cache.get(queue.id);
-      const connection = guild && getVoiceConnection(guild.id);
-      if (guild && connection) listenInVoiceChannel(guild, connection, queue.textChannel);
+      const voice = guild && distube.voices.get(guild.id);
+      if (voice) {
+        voice.setSelfDeaf(false).catch(error => console.warn(`[Voice Listen] Could not enable receiving: ${error.message}`));
+        listenInVoiceChannel(guild, voice.connection, queue.textChannel);
+      }
     } catch (error) {
       console.warn(`[Voice Listen] Could not attach receiver: ${error.message}`);
     }
@@ -248,10 +250,11 @@ async function speakVoiceReply(message, text) {
   voiceReplyLocks.add(guildId);
 
   try {
-    const { createAudioPlayer, createAudioResource, getVoiceConnection, StreamType,
+    const { createAudioResource, StreamType,
       AudioPlayerStatus, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
-    await distube.voices.join(voiceChannel);
-    connection = getVoiceConnection(guildId);
+    await distube.voices.join(voiceChannel, { selfDeaf: false });
+    const voice = distube.voices.get(guildId);
+    connection = voice?.connection;
     if (!connection) throw new Error('Discord voice connection was not available after joining.');
     await entersState(connection, VoiceConnectionStatus.Ready, 8000);
     listenInVoiceChannel(message.guild, connection, message.channel);
@@ -291,8 +294,13 @@ async function speakVoiceReply(message, text) {
     const resource = createAudioResource(require('node:stream').Readable.from(wavBuffer), {
       inputType: StreamType.Arbitrary,
     });
-    player = createAudioPlayer();
-    connection.subscribe(player);
+    // Reuse DisTube's player so speech and music share the same voice
+    // connection cleanly instead of replacing its audio subscription.
+    player = voice.audioPlayer;
+    if (player.state.status !== AudioPlayerStatus.Idle) {
+      console.log(`[Voice TTS] Skipping reply in ${guildId}: DisTube player is busy.`);
+      return false;
+    }
 
     await new Promise((resolve, reject) => {
       let settled = false;
@@ -313,7 +321,7 @@ async function speakVoiceReply(message, text) {
   } catch (error) {
     console.warn(`[Voice TTS] Could not speak reply: ${error.message}`);
   } finally {
-    if (player) player.stop(true);
+    if (player && player.state.status !== 'idle') player.stop(true);
     voiceReplyLocks.delete(guildId);
   }
   return spoken;
@@ -1035,10 +1043,9 @@ async function executeDiscordTool(name, args, message) {
       : caller.voice.channel;
     if (!ch) return { success: false, error: 'Ma lqitch voice channel; dkhol l voice aw 3tini smitha.' };
     try {
-      await distube.voices.join(ch);
-      const { getVoiceConnection } = require('@discordjs/voice');
-      const connection = getVoiceConnection(message.guild.id);
-      if (connection) listenInVoiceChannel(message.guild, connection, message.channel);
+      await distube.voices.join(ch, { selfDeaf: false });
+      const voice = distube.voices.get(message.guild.id);
+      if (voice) listenInVoiceChannel(message.guild, voice.connection, message.channel);
       return { success: true, channel: ch.name };
     } catch (e) { return { success: false, error: e.message }; }
   }
@@ -1278,9 +1285,12 @@ Use the provided Discord tools only for actions the current user clearly request
         await message.reply({ content: responseText, allowedMentions: { parse: [] } });
       }
       // The AI response remains instant in text; voice generation runs separately.
-      speakVoiceReply(message, responseText).catch(error =>
-        console.warn(`[Voice TTS] Background speech failed: ${error.message}`),
-      );
+      const voiceActionConflicts = executedTools.some(({ name }) => name === 'play_music' || name === 'leave_music');
+      if (!voiceActionConflicts) {
+        speakVoiceReply(message, responseText).catch(error =>
+          console.warn(`[Voice TTS] Background speech failed: ${error.message}`),
+        );
+      }
     } catch (err) {
       console.error(`Gemini API Error: ${err.message}`);
       aiUserCooldowns.delete(message.author.id);
