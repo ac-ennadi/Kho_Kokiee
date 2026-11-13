@@ -123,7 +123,13 @@ if (distube) {
     console.error(`[Music] Failed track: ${song?.name || 'unknown'}; source: ${song?.source || 'unknown'}; code: ${error?.errorCode || error?.code || 'unknown'}`);
     console.error('[Music] Playback error:', redactMediaUrls(error?.stack || error?.message || error));
     if (queue && queue.textChannel) {
-      queue.textChannel.send('❌ Ma khdemch l-music daba. Jreb chi track akhor.').catch(() => {});
+      const code = error?.errorCode || error?.code || '';
+      const userMessage = song?.source === 'soundcloud' && code === 'FFMPEG_EXITED'
+        ? '❌ SoundCloud ma9drch yplayi had version (ymken protected aw unavailable). Jreb chi upload/version okhra.'
+        : song?.source === 'youtube' && /BOT_CHECK|Sign in to confirm/i.test(`${code} ${error?.message || ''}`)
+          ? '❌ YouTube blocka l-bot f Railway f had track. Jreb chi upload/version okhra.'
+          : '❌ Ma khdemch l-music daba. Jreb chi track akhor.';
+      queue.textChannel.send(userMessage).catch(() => {});
     }
   });
 }
@@ -193,6 +199,7 @@ const AI_MAX_QUESTION_CHARS = 1500;
 const AI_MAX_CONTEXT_CHARS = 1200;
 const AI_MAX_OUTPUT_TOKENS = 120;
 const roomOwners = new Map();
+const userAddressForms = new Map();
 
 async function sendLog(guild, messageText) {
   if (!LOG_CHANNEL_ID) return;
@@ -462,7 +469,7 @@ function formatToolSummary(executedTools) {
         case 'dm_members': return `Safi sift message f privé l **${r.sent}** members 📩`;
         case 'start_verification': return `Safi bda l-verify, staff ghadi yjiw l ${r.mention || r.user} ✅`;
         case 'join_voice': return `Safi dkhalt l voice \`${r.channel}\` 🔊`;
-        case 'play_music': return `Safi bda kayn-playi \`${r.query}\` 🎶`;
+        case 'play_music': return `Kan9elleb 3la \`${r.query}\` daba 🎶`;
         case 'manage_current_channel': return r.scope === 'voice'
           ? `Safi ${r.action === 'lock' ? 'seddt' : '7ellit'} voice room \`${r.channel}\` ${r.action === 'lock' ? '🔒' : '🔓'}`
           : `Safi ${r.action === 'lock' ? 'seddt' : '7ellit'} text channel <#${r.channelId || ''}> ${r.action === 'lock' ? '🔒' : '🔓'}`;
@@ -526,6 +533,16 @@ function explicitlyRequestedVoiceModeration(message, action) {
   if (action === 'mute') return /\b(mute|silence|sket|saket|skt)\b/.test(text);
   if (action === 'unmute') return /\b(unmute|unsilence|tl9|tlaq|7ell l-mic)\b/.test(text);
   return false;
+}
+
+function getAddressFormPreference(text) {
+  const input = text.toLowerCase().trim();
+  const feminine = /\b(?:i am|i'm|im|call me|use|talk to me (?:as|using)|address me as)\s+(?:a\s+)?(?:girl|woman|female|nti)\b/.test(input)
+    || /\b(?:ana bent|ana mra|3ayet liya b nti|hdar m3aya b nti|khatebni b nti)\b/.test(input);
+  const masculine = /\b(?:i am|i'm|im|call me|use|talk to me (?:as|using)|address me as)\s+(?:a\s+)?(?:boy|man|male|nta)\b/.test(input)
+    || /\b(?:ana weld|ana rajel|3ayet liya b nta|hdar m3aya b nta|khatebni b nta)\b/.test(input);
+  if (feminine === masculine) return null;
+  return feminine ? 'feminine' : 'masculine';
 }
 
 function checkRoleManagementPermissions(caller, role, guild) {
@@ -853,6 +870,13 @@ client.on('messageCreate', async (message) => {
     if (!promptText) return message.reply('Ach bghiti tswelni? Kteb sou2al 🙂');
     if (promptText.length > AI_MAX_QUESTION_CHARS) return message.reply(`Sou2al twil bzaf 😅 7awel tkhtasro l ${AI_MAX_QUESTION_CHARS} 7arf.`);
 
+    const requestedAddressForm = getAddressFormPreference(promptText);
+    if (requestedAddressForm) {
+      userAddressForms.set(message.author.id, requestedAddressForm);
+      const form = requestedAddressForm === 'feminine' ? 'nti' : 'nta';
+      return message.reply(`Safi, ghadi nkhatbek b ${form} mn daba 🙂`);
+    }
+
     // Handle clear channel controls deterministically so the bot cannot claim
     // success based on generated text without actually changing Discord state.
     const directIntent = getDirectChannelIntent(promptText, message);
@@ -890,8 +914,13 @@ client.on('messageCreate', async (message) => {
     if (channelContext.length > AI_MAX_CONTEXT_CHARS) channelContext = channelContext.slice(-AI_MAX_CONTEXT_CHARS);
     const finalPrompt = channelContext ? `Recent channel conversation:\n${channelContext}\n\nCurrent message from [${callerName}]:\n${promptText}` : `[${callerName}]: ${promptText}`;
 
+    const preferredAddressForm = userAddressForms.get(message.author.id);
+    const addressFormInstruction = preferredAddressForm
+      ? `The current speaker explicitly prefers ${preferredAddressForm === 'feminine' ? 'feminine address (nti)' : 'masculine address (nta)'}. Use that form for this speaker. Do not apply it to other people.`
+      : 'Never guess a person’s gender from their name, avatar, or writing. Use neutral phrasing for the current speaker; if using nta/nti matters, politely ask which form they prefer.';
     const systemInstruction = `You are kho Kokiee, an original, strict-but-funny Moroccan Darija Discord moderator with dramatic referee energy. Do not imitate or claim to be any real historical leader or extremist figure, and do not use extremist slogans or propaganda.
 Always reply in Moroccan Darija written with Latin letters/Arabizi (like "salam cv", "a sat", "wa3er"); never use Arabic script. Sound casual and human, not formal or robotic. Keep normal replies short (usually 1-2 sentences), use a quick joke when it fits, and don't force jokes into serious conversations.
+${addressFormInstruction}
 Be confident and firm about server rules without humiliating members, making threats, or using slurs. Do not make sexual comments about real people.
 You may use casual Darija profanity sparingly as playful, situation-directed banter (for example, "ya l kalb"  about a frustrating situation or your own mistake). Never direct insults, humiliation, slurs, or profanity at a server member; soften it if the context is unclear.
 When a user clearly asks you to lock/close or open/unlock a channel, call manage_current_channel without asking them to use a prefix command. Treat "tap", "chat", or "text channel" as the current text channel unless they are in a bot-created temporary voice room; then "tap" means that voice room. Only that voice room's owner may lock or open it; reject requests from everyone else, including staff. Lock/open text channels only for members with Manage Channels/staff permission. If they ask for a new personal voice room, call create_personal_voice_room; they must be in voice, and the tool creates the room and moves them into it. Use rename_voice_room to change the caller's current room name, and reject_voice_member to deny a mentioned member entry and disconnect them from that room. Phrases like "lock the tap", "open the tap", "7ol tap", and "sedd tap" are direct requests. Never say an action succeeded unless its tool result is success.
