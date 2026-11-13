@@ -270,7 +270,9 @@ async function speakVoiceReply(message, text) {
         signal: AbortSignal.timeout(15000),
         body: JSON.stringify({
           contents: [{ parts: [{
-            text: `Say these words exactly in Moroccan Darija, with a natural Moroccan accent. The text uses Latin-letter Darija transliteration; pronounce it as spoken Darija. Do not translate it or add words:\n${spokenText}`,
+            // TTS recites the text field verbatim; keep all directions in
+            // speechMetadata so it never reads the instructions aloud.
+            text: spokenText,
             speechMetadata: { style: 'natural, friendly Moroccan Darija pronunciation, conversational pace' },
           }] }],
           generationConfig: {
