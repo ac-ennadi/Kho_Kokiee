@@ -270,7 +270,6 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
     return false;
   }
   if (voiceReplyLocks.has(message.guild.id)) return false;
-  if (Date.now() < voiceTtsQuotaBackoffUntil) return false;
 
   let player;
   let connection;
@@ -302,60 +301,10 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
     let wavBuffer = null;
     const providerErrors = [];
     let arabicSpeechText = String(speechTextArabic || '').trim();
-    if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) {
-      try { arabicSpeechText = await toMoroccanArabicScript(spokenText); }
-      catch (error) {
-        console.warn(`[Voice TTS] Could not transliterate Darija for speech: ${error.message}`);
-        arabicSpeechText = spokenText;
-      }
-    }
 
-    if (HADRA_TTS_URL && Date.now() >= hadraTtsBackoffUntil) {
-      try {
-        const hadraResponse = await fetch(HADRA_TTS_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: arabicSpeechText, format: 'wav' }),
-          signal: AbortSignal.timeout(7000),
-        });
-        if (!hadraResponse.ok) throw new Error(`HADRA returned HTTP ${hadraResponse.status}: ${(await hadraResponse.text()).slice(0, 200)}`);
-        wavBuffer = Buffer.from(await hadraResponse.arrayBuffer());
-        if (wavBuffer.length < 44 || wavBuffer.toString('ascii', 0, 4) !== 'RIFF') {
-          throw new Error('HADRA returned an invalid WAV response.');
-        }
-        console.log('[Voice TTS] Synthesized reply with HADRA Moroccan Darija.');
-      } catch (error) {
-        hadraTtsBackoffUntil = Date.now() + 5 * 60 * 1000;
-        providerErrors.push(error.message);
-        console.warn(`[Voice TTS] HADRA unavailable; trying Azure/Gemini fallback: ${error.message}`);
-      }
-    }
-
-    if (!wavBuffer && AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
-      try {
-        const safeText = arabicSpeechText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-        const ssml = `<speak version="1.0" xml:lang="ar-MA"><voice name="${AZURE_SPEECH_VOICE}" xml:lang="ar-MA">${safeText}</voice></speak>`;
-        const azureResponse = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
-          method: 'POST',
-          headers: {
-            'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
-            'Content-Type': 'application/ssml+xml',
-            'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',
-            'User-Agent': 'KhoKokieeDiscordBot',
-          },
-          body: ssml,
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!azureResponse.ok) throw new Error(`Azure Speech returned HTTP ${azureResponse.status}: ${(await azureResponse.text()).slice(0, 250)}`);
-        wavBuffer = Buffer.from(await azureResponse.arrayBuffer());
-        console.log(`[Voice TTS] Synthesized reply with Azure voice ${AZURE_SPEECH_VOICE}.`);
-      } catch (error) {
-        providerErrors.push(error.message);
-        console.warn(`[Voice TTS] Azure provider failed; trying Gemini fallback: ${error.message}`);
-      }
-    }
-
-    if (!wavBuffer && GEMINI_API_KEY && Date.now() >= voiceTtsQuotaBackoffUntil) {
+    // Prefer Gemini when available, then use the Darija-focused HADRA model,
+    // and finally Azure as the compatibility fallback.
+    if (GEMINI_API_KEY && Date.now() >= voiceTtsQuotaBackoffUntil) {
       try {
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
@@ -388,6 +337,52 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
         console.log(`[Voice TTS] Synthesized reply with Gemini voice ${GEMINI_TTS_VOICE}.`);
       } catch (error) {
         providerErrors.push(error.message);
+        console.warn(`[Voice TTS] Gemini unavailable; trying HADRA/Azure fallback: ${error.message}`);
+      }
+    }
+
+    if (!wavBuffer && HADRA_TTS_URL && Date.now() >= hadraTtsBackoffUntil) {
+      try {
+        if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) arabicSpeechText = await toMoroccanArabicScript(spokenText);
+        const hadraResponse = await fetch(HADRA_TTS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: arabicSpeechText, format: 'wav' }),
+          signal: AbortSignal.timeout(7000),
+        });
+        if (!hadraResponse.ok) throw new Error(`HADRA returned HTTP ${hadraResponse.status}: ${(await hadraResponse.text()).slice(0, 200)}`);
+        wavBuffer = Buffer.from(await hadraResponse.arrayBuffer());
+        if (wavBuffer.length < 44 || wavBuffer.toString('ascii', 0, 4) !== 'RIFF') throw new Error('HADRA returned an invalid WAV response.');
+        console.log('[Voice TTS] Synthesized reply with HADRA Moroccan Darija.');
+      } catch (error) {
+        hadraTtsBackoffUntil = Date.now() + 5 * 60 * 1000;
+        providerErrors.push(error.message);
+        console.warn(`[Voice TTS] HADRA unavailable; trying Azure fallback: ${error.message}`);
+      }
+    }
+
+    if (!wavBuffer && AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
+      try {
+        if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) arabicSpeechText = await toMoroccanArabicScript(spokenText);
+        const safeText = arabicSpeechText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        const ssml = `<speak version="1.0" xml:lang="ar-MA"><voice name="${AZURE_SPEECH_VOICE}" xml:lang="ar-MA">${safeText}</voice></speak>`;
+        const azureResponse = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+          method: 'POST',
+          headers: {
+            'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
+            'Content-Type': 'application/ssml+xml',
+            'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',
+            'User-Agent': 'KhoKokieeDiscordBot',
+          },
+          body: ssml,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!azureResponse.ok) throw new Error(`Azure Speech returned HTTP ${azureResponse.status}: ${(await azureResponse.text()).slice(0, 250)}`);
+        wavBuffer = Buffer.from(await azureResponse.arrayBuffer());
+        console.log(`[Voice TTS] Synthesized reply with Azure voice ${AZURE_SPEECH_VOICE}.`);
+      } catch (error) {
+        providerErrors.push(error.message);
+        console.warn(`[Voice TTS] Azure provider failed: ${error.message}`);
       }
     }
     if (!wavBuffer) throw new Error(providerErrors.join(' | ') || 'No TTS provider is configured or its quota is unavailable.');
@@ -893,7 +888,7 @@ function getVoiceCommandIntent(text) {
   const input = String(text || '').toLowerCase().replace(/[.,!?]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!input || /^(how|how do i|how can i|kifach|wach n9der|chno ma3na)\b/.test(input)) return null;
   const hasChannel = /\b(tap|voice|room|channel)\b/.test(input);
-  const lock = /\b(lock|close|sedd|ssed|sdd|7bes)\b/.test(input);
+  const lock = /\b(lock|close|tsad|tsedd|tssed|sedd|ssed|sdd|7bes)\b/.test(input);
   const unlock = /\b(open|unlock|7ol|7ell|7el|7oul|7oul|7oul|7ellih)\b/.test(input);
 
   if (hasChannel && lock) return { name: 'manage_current_channel', args: { action: 'lock', scope: 'voice' } };
@@ -929,7 +924,8 @@ function getDirectChannelIntent(text, message) {
   const callerRoom = message.member?.voice?.channel;
   const ownsCurrentRoom = callerRoom && isVoiceRoomOwner(message.member, callerRoom);
   const isInTemporaryRoom = callerRoom && (roomOwners.has(callerRoom.id) || callerRoom.name.startsWith('🔊 '));
-  const hasVoiceScope = /\b(voice|room)\b/.test(input) || (isInTemporaryRoom && /\btap\b/.test(input));
+  // In this bot's Darija commands, "tap" means the current voice channel.
+  const hasVoiceScope = /\b(voice|room|tap)\b/.test(input);
   const hasTextScope = /\b(text|chat|text channel)\b/.test(input);
   if (!hasTextScope && isInTemporaryRoom && /\b(allow|let|khli|khalli)\b/.test(input)
     && /\b(join|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\btap\b/.test(input)) {
@@ -942,7 +938,7 @@ function getDirectChannelIntent(text, message) {
   if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room)\b/.test(input)) {
     return { name: 'create_personal_voice_room', args: {} };
   }
-  const lock = /\b(lock|close|ssed|sedd|sdd|7bes)\b/.test(input);
+  const lock = /\b(lock|close|tsad|tsedd|tssed|ssed|sedd|sdd|7bes)\b/.test(input);
   const unlock = /\b(open|unlock|t?7ol|t?7ell|t?7el|t?7oul)\b/.test(input);
   if ((lock || unlock) && /\b(tap|chat|channel|voice|room)\b/.test(input)) {
     return { name: 'manage_current_channel', args: { action: lock ? 'lock' : 'unlock', scope: hasVoiceScope && !hasTextScope ? 'voice' : 'text' } };
