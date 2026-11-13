@@ -415,7 +415,7 @@ async function answerVoiceUtterance(guild, member, pcm) {
       signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: `Listen to this voice message and reply naturally to what the person said. Reply only in short Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Keep it to one short sentence. Do not just transcribe the audio. The speaker is ${member.displayName}.` },
+          { text: `You are Kho Kokiee in a Discord voice channel. First decide whether the speaker is directly calling you by saying "Kho Kokiee", "Kokiee", or "hey bot". If they did not clearly call you by one of those names, output exactly [IGNORE] and nothing else. Do not answer ordinary conversation or speech addressed to another person. If they did call you, answer what they said in one short, natural sentence of Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Do not transcribe their speech. The speaker is ${member.displayName}.` },
           { inlineData: { mimeType: 'audio/wav', data: makePcmWav(pcm, 48000, 2).toString('base64') } },
         ] }],
         generationConfig: { maxOutputTokens: 90, temperature: 0.6 },
@@ -430,6 +430,10 @@ async function answerVoiceUtterance(guild, member, pcm) {
     .trim()
     .slice(0, 240);
   if (!answer) throw new Error('Gemini returned no answer for the voice message.');
+  if (answer.toUpperCase().startsWith('[IGNORE]')) {
+    console.log(`[Voice Listen] Ignored speech not addressed to the bot in ${guild.id}.`);
+    return;
+  }
 
   const textChannel = voiceReplyChannels.get(guild.id);
   if (textChannel?.isTextBased()) {
