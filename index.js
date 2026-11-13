@@ -166,6 +166,7 @@ const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || 'Fenrir';
 const AZURE_SPEECH_KEY = process.env.AZURE_SPEECH_KEY;
 const AZURE_SPEECH_REGION = process.env.AZURE_SPEECH_REGION;
 const AZURE_SPEECH_VOICE = process.env.AZURE_SPEECH_VOICE || 'ar-MA-JamalNeural';
+const HADRA_TTS_URL = process.env.HADRA_TTS_URL || 'https://inkjet-downloads-inserted-pad.trycloudflare.com/v1/tts';
 const VOICE_TTS_ENABLED = process.env.VOICE_TTS_ENABLED !== 'false';
 const voiceReplyLocks = new Set();
 const voiceConversationLocks = new Set();
@@ -174,6 +175,7 @@ const voiceReplyChannels = new Map();
 const voiceDialogContexts = new Map();
 let voiceTtsQuotaBackoffUntil = 0;
 let lastVoiceTtsQuotaNoticeAt = 0;
+let hadraTtsBackoffUntil = 0;
 let availableModelsCache = [];
 let genAI = null;
 if (GEMINI_API_KEY) {
@@ -259,7 +261,7 @@ async function toMoroccanArabicScript(text) {
 }
 
 async function speakVoiceReply(message, text, speechTextArabic = null) {
-  if (!VOICE_TTS_ENABLED || (!GEMINI_API_KEY && !(AZURE_SPEECH_KEY && AZURE_SPEECH_REGION)) || !distube || !message.guild) return false;
+  if (!VOICE_TTS_ENABLED || (!GEMINI_API_KEY && !(AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) && !HADRA_TTS_URL) || !distube || !message.guild) return false;
   const voiceChannel = message.member?.voice?.channel || message.guild.members.me?.voice?.channel;
   if (!voiceChannel) return false; // Text-only use stays text-only; no unexpected joining.
   if (distube.getQueue(message.guild)) {
@@ -298,14 +300,39 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
     if (!spokenText) return;
     let wavBuffer = null;
     const providerErrors = [];
-    if (AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
+    let arabicSpeechText = String(speechTextArabic || '').trim();
+    if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) {
+      try { arabicSpeechText = await toMoroccanArabicScript(spokenText); }
+      catch (error) {
+        console.warn(`[Voice TTS] Could not transliterate Darija for speech: ${error.message}`);
+        arabicSpeechText = spokenText;
+      }
+    }
+
+    if (HADRA_TTS_URL && Date.now() >= hadraTtsBackoffUntil) {
       try {
-        let azureText = String(speechTextArabic || '').trim();
-        if (!/[\u0600-\u06FF]/.test(azureText)) {
-          try { azureText = await toMoroccanArabicScript(spokenText); }
-          catch (error) { console.warn(`[Voice TTS] Could not transliterate Darija for Azure: ${error.message}`); azureText = spokenText; }
+        const hadraResponse = await fetch(HADRA_TTS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: arabicSpeechText, format: 'wav' }),
+          signal: AbortSignal.timeout(7000),
+        });
+        if (!hadraResponse.ok) throw new Error(`HADRA returned HTTP ${hadraResponse.status}: ${(await hadraResponse.text()).slice(0, 200)}`);
+        wavBuffer = Buffer.from(await hadraResponse.arrayBuffer());
+        if (wavBuffer.length < 44 || wavBuffer.toString('ascii', 0, 4) !== 'RIFF') {
+          throw new Error('HADRA returned an invalid WAV response.');
         }
-        const safeText = azureText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        console.log('[Voice TTS] Synthesized reply with HADRA Moroccan Darija.');
+      } catch (error) {
+        hadraTtsBackoffUntil = Date.now() + 5 * 60 * 1000;
+        providerErrors.push(error.message);
+        console.warn(`[Voice TTS] HADRA unavailable; trying Azure/Gemini fallback: ${error.message}`);
+      }
+    }
+
+    if (!wavBuffer && AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
+      try {
+        const safeText = arabicSpeechText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
         const ssml = `<speak version="1.0" xml:lang="ar-MA"><voice name="${AZURE_SPEECH_VOICE}" xml:lang="ar-MA">${safeText}</voice></speak>`;
         const azureResponse = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
           method: 'POST',
