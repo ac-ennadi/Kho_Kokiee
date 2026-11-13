@@ -102,6 +102,16 @@ if (distube) {
     if (queue && queue.textChannel) {
       queue.textChannel.send(`🎶 Daba kayn-playi: \`${song.name}\``).catch(() => {});
     }
+    // Music can be the first action that joins the bot to voice. Keep the
+    // receiver ready so it can answer once playback ends.
+    try {
+      const { getVoiceConnection } = require('@discordjs/voice');
+      const guild = client.guilds.cache.get(queue.id);
+      const connection = guild && getVoiceConnection(guild.id);
+      if (guild && connection) listenInVoiceChannel(guild, connection, queue.textChannel);
+    } catch (error) {
+      console.warn(`[Voice Listen] Could not attach receiver: ${error.message}`);
+    }
   });
 
   distube.on('addSong', (queue, song) => {
@@ -153,6 +163,9 @@ const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-lite-
 const GEMINI_TTS_VOICE = process.env.GEMINI_TTS_VOICE || 'Kore';
 const VOICE_TTS_ENABLED = process.env.VOICE_TTS_ENABLED !== 'false';
 const voiceReplyLocks = new Set();
+const voiceConversationLocks = new Set();
+const voiceListeners = new Map();
+const voiceReplyChannels = new Map();
 let availableModelsCache = [];
 let genAI = null;
 if (GEMINI_API_KEY) {
@@ -217,19 +230,20 @@ function makePcmWav(pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
 }
 
 async function speakVoiceReply(message, text) {
-  if (!VOICE_TTS_ENABLED || !GEMINI_API_KEY || !distube || !message.guild) return;
+  if (!VOICE_TTS_ENABLED || !GEMINI_API_KEY || !distube || !message.guild) return false;
   const voiceChannel = message.member?.voice?.channel || message.guild.members.me?.voice?.channel;
-  if (!voiceChannel) return; // Text-only use stays text-only; no unexpected joining.
+  if (!voiceChannel) return false; // Text-only use stays text-only; no unexpected joining.
   if (distube.getQueue(message.guild)) {
     console.log(`[Voice TTS] Skipping reply in ${message.guild.id}: music is playing.`);
-    return;
+    return false;
   }
-  if (voiceReplyLocks.has(message.guild.id)) return;
+  if (voiceReplyLocks.has(message.guild.id)) return false;
 
   let player;
   let connection;
   let idleHandler;
   let errorHandler;
+  let spoken = false;
   const guildId = message.guild.id;
   voiceReplyLocks.add(guildId);
 
@@ -240,6 +254,7 @@ async function speakVoiceReply(message, text) {
     connection = getVoiceConnection(guildId);
     if (!connection) throw new Error('Discord voice connection was not available after joining.');
     await entersState(connection, VoiceConnectionStatus.Ready, 8000);
+    listenInVoiceChannel(message.guild, connection, message.channel);
 
     // Keep spoken answers short so they are quick and use fewer TTS tokens.
     const spokenText = text.replace(/<@!?\d+>/g, '').slice(0, 240).trim();
@@ -257,7 +272,7 @@ async function speakVoiceReply(message, text) {
           }] }],
           generationConfig: {
             responseModalities: ['AUDIO'],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_TTS_VOICE } } },
+            speechConfig: { voiceConfig: { voice: GEMINI_TTS_VOICE } },
           },
         }),
       },
@@ -294,11 +309,125 @@ async function speakVoiceReply(message, text) {
       player.once('error', errorHandler);
       player.play(resource);
     });
+    spoken = true;
   } catch (error) {
     console.warn(`[Voice TTS] Could not speak reply: ${error.message}`);
   } finally {
     if (player) player.stop(true);
     voiceReplyLocks.delete(guildId);
+  }
+  return spoken;
+}
+
+function listenInVoiceChannel(guild, connection, replyChannel) {
+  if (!VOICE_TTS_ENABLED || !GEMINI_API_KEY || !guild || !connection || voiceListeners.has(guild.id)) return;
+  const { EndBehaviorType, VoiceConnectionStatus } = require('@discordjs/voice');
+  const prism = require('prism-media');
+  const listener = { connection, onSpeaking: null, onState: null };
+  voiceListeners.set(guild.id, listener);
+  if (replyChannel?.isTextBased()) voiceReplyChannels.set(guild.id, replyChannel);
+
+  listener.onSpeaking = (userId) => {
+    if (userId === client.user.id || voiceReplyLocks.has(guild.id) || voiceConversationLocks.has(guild.id)) return;
+    const member = guild.members.cache.get(userId);
+    if (!member || member.user.bot || !member.voice.channelId) return;
+    if (distube?.getQueue(guild)) return; // Don't transcribe music or consume API while music is playing.
+    voiceConversationLocks.add(guild.id);
+
+    const opusStream = connection.receiver.subscribe(userId, {
+      end: { behavior: EndBehaviorType.AfterSilence, duration: 750 },
+    });
+    const decoder = new prism.opus.Decoder({ rate: 48000, channels: 2, frameSize: 960 });
+    const pcmChunks = [];
+    let byteCount = 0;
+    let captureStopped = false;
+    const maxAudioBytes = 48000 * 2 * 2 * 12; // 12 seconds, 48 kHz stereo signed 16-bit PCM.
+    const stopCapture = () => {
+      if (captureStopped) return;
+      captureStopped = true;
+      opusStream.unpipe(decoder);
+      decoder.end();
+      opusStream.destroy();
+    };
+    const captureTimeout = setTimeout(stopCapture, 12000);
+    opusStream.pipe(decoder);
+    decoder.on('data', chunk => {
+      byteCount += chunk.length;
+      if (byteCount <= maxAudioBytes) pcmChunks.push(chunk);
+      else stopCapture();
+    });
+    decoder.once('error', error => {
+      clearTimeout(captureTimeout);
+      console.warn(`[Voice Listen] Decode error: ${error.message}`);
+      voiceConversationLocks.delete(guild.id);
+    });
+    decoder.once('end', () => {
+      clearTimeout(captureTimeout);
+      const pcm = Buffer.concat(pcmChunks);
+      if (pcm.length < 48000 * 2 * 2 * 0.35) {
+        voiceConversationLocks.delete(guild.id);
+        return;
+      }
+      answerVoiceUtterance(guild, member, pcm).catch(error => {
+        console.warn(`[Voice Listen] Could not answer: ${error.message}`);
+        const textChannel = voiceReplyChannels.get(guild.id);
+        if (textChannel?.isTextBased()) {
+          textChannel.send('Sme7 lia, ma qdertch nfhem l-hdra. T2ekked men API key w credits dyal bot.').catch(() => {});
+        }
+      }).finally(() => voiceConversationLocks.delete(guild.id));
+    });
+    opusStream.once('error', error => {
+      clearTimeout(captureTimeout);
+      console.warn(`[Voice Listen] Capture error: ${error.message}`);
+      voiceConversationLocks.delete(guild.id);
+    });
+  };
+
+  listener.onState = (_oldState, newState) => {
+    if (newState.status !== VoiceConnectionStatus.Destroyed) return;
+    connection.receiver.speaking.off('start', listener.onSpeaking);
+    connection.off('stateChange', listener.onState);
+    voiceListeners.delete(guild.id);
+    voiceReplyChannels.delete(guild.id);
+  };
+  connection.receiver.speaking.on('start', listener.onSpeaking);
+  connection.on('stateChange', listener.onState);
+  console.log(`[Voice Listen] Listening for speech in ${guild.id}.`);
+}
+
+async function answerVoiceUtterance(guild, member, pcm) {
+  const model = getModelCandidates()[0];
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { text: `Listen to this voice message and reply naturally to what the person said. Reply only in short Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Keep it to one short sentence. Do not just transcribe the audio. The speaker is ${member.displayName}.` },
+          { inlineData: { mimeType: 'audio/wav', data: makePcmWav(pcm, 48000, 2).toString('base64') } },
+        ] }],
+        generationConfig: { maxOutputTokens: 90, temperature: 0.6 },
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`Gemini audio returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const data = await response.json();
+  const answer = (data.candidates?.[0]?.content?.parts || [])
+    .map(part => part.text || '')
+    .join(' ')
+    .trim()
+    .slice(0, 240);
+  if (!answer) throw new Error('Gemini returned no answer for the voice message.');
+
+  const textChannel = voiceReplyChannels.get(guild.id);
+  if (textChannel?.isTextBased()) {
+    await textChannel.send({ content: `${member}, ${answer}`, allowedMentions: { parse: [], users: [member.id] } }).catch(() => {});
+  }
+  const spoken = await speakVoiceReply({ guild, member, channel: textChannel }, answer);
+  if (!spoken && textChannel?.isTextBased()) {
+    await textChannel.send('Sme7 lia, ma qdertch nhder f voice daba. Chouf permissions w API billing dyal bot.').catch(() => {});
   }
 }
 
@@ -905,7 +1034,13 @@ async function executeDiscordTool(name, args, message) {
       ? findVoiceChannel(message.guild, args.channel)
       : caller.voice.channel;
     if (!ch) return { success: false, error: 'Ma lqitch voice channel; dkhol l voice aw 3tini smitha.' };
-    try { await distube.voices.join(ch); return { success: true, channel: ch.name }; } catch (e) { return { success: false, error: e.message }; }
+    try {
+      await distube.voices.join(ch);
+      const { getVoiceConnection } = require('@discordjs/voice');
+      const connection = getVoiceConnection(message.guild.id);
+      if (connection) listenInVoiceChannel(message.guild, connection, message.channel);
+      return { success: true, channel: ch.name };
+    } catch (e) { return { success: false, error: e.message }; }
   }
 
   // ==== NON-BLOCKING MUSIC PLAY (FIXES 15s LATENCY) ====
