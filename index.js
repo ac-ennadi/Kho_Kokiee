@@ -168,6 +168,7 @@ const voiceReplyLocks = new Set();
 const voiceConversationLocks = new Set();
 const voiceListeners = new Map();
 const voiceReplyChannels = new Map();
+const voiceDialogContexts = new Map();
 let availableModelsCache = [];
 let genAI = null;
 if (GEMINI_API_KEY) {
@@ -416,6 +417,15 @@ function listenInVoiceChannel(guild, connection, replyChannel) {
 
 async function answerVoiceUtterance(guild, member, pcm) {
   const model = getModelCandidates()[0];
+  const contextKey = `${guild.id}:${member.id}`;
+  const previousDialog = voiceDialogContexts.get(contextKey);
+  const recentTurns = previousDialog && previousDialog.expiresAt > Date.now()
+    ? previousDialog.turns
+    : [];
+  const recentContext = recentTurns.map(turn => `${turn.role}: ${turn.text}`).join('\n').slice(-900);
+  const contextInstruction = recentContext
+    ? `Recent voice conversation with this speaker:\n${recentContext}\nUse this context to tell whether the new speech is a follow-up to you.`
+    : 'There is no recent voice conversation with this speaker yet.';
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
     {
@@ -424,21 +434,41 @@ async function answerVoiceUtterance(guild, member, pcm) {
       signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
         contents: [{ parts: [
-          { text: `You are Kho Kokiee having a voice conversation in Discord. Do not wait for or detect a wake word, bot name, or special trigger. Treat this speech clip as addressed to you and respond to what the person said. Reply in one short, natural sentence of Moroccan Darija written with Latin letters (Arabizi), like "salam cv". Do not transcribe the speech. The speaker is ${member.displayName}.` },
+          { text: `You are Kho Kokiee in a Discord voice channel. Do not use a wake word, bot name, or special trigger. Decide from what the person says and the recent context whether they are talking to you. If they ask you a question, give you a request, greet you, or continue a recent exchange with you, mark addressed=true. Mark addressed=false only when it is clearly conversation between other people or unrelated background speech. If unclear, favor answering when the utterance sounds like a question or follows your last reply. Return only JSON with exactly these fields: {"addressed": boolean, "transcript": "short transcript of the speaker", "reply": "one short reply in Moroccan Darija written with Latin letters (Arabizi), like salam cv; empty when addressed is false"}. ${contextInstruction} Speaker: ${member.displayName}.` },
           { inlineData: { mimeType: 'audio/wav', data: makePcmWav(pcm, 48000, 2).toString('base64') } },
         ] }],
-        generationConfig: { maxOutputTokens: 90, temperature: 0.6 },
+        generationConfig: { maxOutputTokens: 120, temperature: 0.4, responseMimeType: 'application/json' },
       }),
     },
   );
   if (!response.ok) throw new Error(`Gemini audio returned HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
   const data = await response.json();
-  const answer = (data.candidates?.[0]?.content?.parts || [])
+  const rawAnswer = (data.candidates?.[0]?.content?.parts || [])
     .map(part => part.text || '')
     .join(' ')
-    .trim()
-    .slice(0, 240);
+    .trim();
+  let result;
+  try {
+    result = JSON.parse(rawAnswer.replace(/^```(?:json)?\s*|\s*```$/gi, '').trim());
+  } catch {
+    // Gracefully accept a plain-text answer if a model ignores JSON mode.
+    if (/^\[IGNORE\]/i.test(rawAnswer)) {
+      console.log(`[Voice Listen] Ignored speech not addressed to the bot in ${guild.id}.`);
+      return;
+    }
+    result = { addressed: true, transcript: '', reply: rawAnswer };
+  }
+  if (result.addressed === false) {
+    console.log(`[Voice Listen] Ignored speech not addressed to the bot in ${guild.id}.`);
+    return;
+  }
+  const answer = String(result.reply || '').trim().slice(0, 240);
   if (!answer) throw new Error('Gemini returned no answer for the voice message.');
+  const transcript = String(result.transcript || '').trim().slice(0, 240);
+  voiceDialogContexts.set(contextKey, {
+    expiresAt: Date.now() + 2 * 60 * 1000,
+    turns: [...recentTurns, ...(transcript ? [{ role: 'User', text: transcript }] : []), { role: 'Kho Kokiee', text: answer }].slice(-6),
+  });
   const textChannel = voiceReplyChannels.get(guild.id);
   if (textChannel?.isTextBased()) {
     await textChannel.send({ content: `${member}, ${answer}`, allowedMentions: { parse: [], users: [member.id] } }).catch(() => {});
