@@ -78,7 +78,10 @@ function createMusicService(client) {
         const guild = client.guilds.cache.get(queue.id);
         const voice = guild && distube.voices.get(guild.id);
         if (voice) {
-          voice.setSelfDeaf(false).catch(error => console.warn(`[Voice Listen] Could not enable receiving: ${error.message}`));
+          const unmuteReceiver = voice.setSelfDeaf(false);
+          if (unmuteReceiver && typeof unmuteReceiver.catch === 'function') {
+            unmuteReceiver.catch(error => console.warn(`[Voice Listen] Could not enable receiving: ${error.message}`));
+          }
           listenInVoiceChannel(guild, voice.connection, queue.textChannel);
         }
       } catch (error) {
