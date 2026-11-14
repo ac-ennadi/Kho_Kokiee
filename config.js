@@ -16,6 +16,13 @@ const config = {
   AZURE_SPEECH_REGION: process.env.AZURE_SPEECH_REGION,
   AZURE_SPEECH_VOICE: process.env.AZURE_SPEECH_VOICE || 'ar-MA-JamalNeural',
   HADRA_TTS_URL: process.env.HADRA_TTS_URL || null,
+  EDGE_TTS_COMMAND: process.env.EDGE_TTS_COMMAND || (process.platform === 'win32' ? 'edge-tts' : '/opt/edge-tts/bin/edge-tts'),
+  EDGE_TTS_VOICE: process.env.EDGE_TTS_VOICE || 'ar-MA-JamalNeural',
+  KANDIR_TTS_URL: process.env.KANDIR_TTS_URL || null,
+  KANDIR_TTS_TOKEN: process.env.KANDIR_TTS_TOKEN || null,
+  SPEECHT5_TTS_URL: process.env.SPEECHT5_TTS_URL || null,
+  SPEECHT5_TTS_TOKEN: process.env.SPEECHT5_TTS_TOKEN || null,
+  VOICE_TTS_PROVIDER: (process.env.VOICE_TTS_PROVIDER || 'auto').toLowerCase(),
   VOICE_TTS_ENABLED: process.env.VOICE_TTS_ENABLED !== 'false',
 };
 

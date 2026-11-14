@@ -1,7 +1,18 @@
 const { PermissionsBitField } = require('discord.js');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 
 function createVoiceService({ client, distube, config, gemini, discord }) {
-  const { GEMINI_API_KEY, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, AZURE_SPEECH_VOICE, HADRA_TTS_URL, VOICE_TTS_ENABLED } = config;
+  const {
+    GEMINI_API_KEY, GEMINI_TTS_MODEL, GEMINI_TTS_VOICE,
+    AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, AZURE_SPEECH_VOICE,
+    HADRA_TTS_URL, EDGE_TTS_COMMAND, EDGE_TTS_VOICE,
+    KANDIR_TTS_URL, KANDIR_TTS_TOKEN, SPEECHT5_TTS_URL,
+    SPEECHT5_TTS_TOKEN, VOICE_TTS_PROVIDER, VOICE_TTS_ENABLED,
+  } = config;
   const voiceReplyLocks = new Set();
   const voiceConversationLocks = new Set();
   const voiceListeners = new Map();
@@ -12,8 +23,74 @@ function createVoiceService({ client, distube, config, gemini, discord }) {
   let voiceListenBackoffUntil = 0;
   let lastVoiceListenQuotaNoticeAt = 0;
   let hadraTtsBackoffUntil = 0;
+  const modelTtsBackoffs = new Map();
   const getModelCandidates = gemini.getModelCandidates;
   const { getVoiceCommandIntent, executeDiscordTool, formatToolSummary } = discord;
+  const preferredTtsProvider = ['auto', 'gemini', 'hadra', 'kandir', 'speecht5', 'edge', 'azure'].includes(VOICE_TTS_PROVIDER)
+    ? VOICE_TTS_PROVIDER
+    : 'auto';
+  const shouldTryTtsProvider = provider => preferredTtsProvider === 'auto' || preferredTtsProvider === provider;
+
+  async function synthesizeEdgeSpeech(text) {
+    const outputPath = path.join(os.tmpdir(), `kho-kokiee-${randomUUID()}.mp3`);
+    try {
+      await new Promise((resolve, reject) => {
+        const process = spawn(EDGE_TTS_COMMAND, [
+          '--voice', EDGE_TTS_VOICE,
+          '--text', text,
+          '--write-media', outputPath,
+        ], { stdio: 'ignore' });
+        let settled = false;
+        const finish = error => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          error ? reject(error) : resolve();
+        };
+        const timeout = setTimeout(() => {
+          process.kill('SIGKILL');
+          finish(new Error('Edge TTS timed out.'));
+        }, 10000);
+        process.once('error', finish);
+        process.once('close', code => code === 0 ? finish() : finish(new Error(`Edge TTS exited with code ${code}.`)));
+      });
+      const audio = await fs.readFile(outputPath);
+      if (audio.length < 100) throw new Error('Edge TTS returned an empty audio file.');
+      return audio;
+    } finally {
+      await fs.unlink(outputPath).catch(() => {});
+    }
+  }
+
+  async function requestModelSpeech(url, text, token, providerName) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ text, format: 'wav' }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) throw new Error(`${providerName} returned HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    const audio = Buffer.from(await response.arrayBuffer());
+    if (audio.length < 44 || audio.toString('ascii', 0, 4) !== 'RIFF') {
+      throw new Error(`${providerName} endpoint must return raw WAV audio.`);
+    }
+    return audio;
+  }
+
+  async function tryModelProvider({ name, url, token, text }) {
+    if (!url || Date.now() < (modelTtsBackoffs.get(name) || 0)) return null;
+    try {
+      const audio = await requestModelSpeech(url, text, token, name);
+      console.log(`[Voice TTS] Synthesized reply with ${name}.`);
+      return audio;
+    } catch (error) {
+      modelTtsBackoffs.set(name, Date.now() + 5 * 60 * 1000);
+      console.warn(`[Voice TTS] ${name} unavailable; trying next provider: ${error.message}`);
+      return null;
+    }
+  }
 
 function makePcmWav(pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
   const header = Buffer.alloc(44);
@@ -55,7 +132,7 @@ async function toMoroccanArabicScript(text) {
 }
 
 async function speakVoiceReply(message, text, speechTextArabic = null) {
-  if (!VOICE_TTS_ENABLED || (!GEMINI_API_KEY && !(AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) && !HADRA_TTS_URL) || !distube || !message.guild) return false;
+  if (!VOICE_TTS_ENABLED || !distube || !message.guild) return false;
   const voiceChannel = message.guild.members.me?.voice?.channel;
   if (!voiceChannel || message.member?.voice?.channelId !== voiceChannel.id) return false;
   if (distube.getQueue(message.guild)) {
@@ -94,9 +171,9 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
     const providerErrors = [];
     let arabicSpeechText = String(speechTextArabic || '').trim();
 
-    // Prefer Gemini when available, then use the Darija-focused HADRA model,
-    // and finally Azure as the compatibility fallback.
-    if (GEMINI_API_KEY && Date.now() >= voiceTtsQuotaBackoffUntil) {
+    // Try the configured providers in order: Gemini, HADRA, dedicated
+    // self-hosted Darija models, Edge TTS, then Azure.
+    if (shouldTryTtsProvider('gemini') && GEMINI_API_KEY && Date.now() >= voiceTtsQuotaBackoffUntil) {
       try {
         const response = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TTS_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
@@ -129,11 +206,11 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
         console.log(`[Voice TTS] Synthesized reply with Gemini voice ${GEMINI_TTS_VOICE}.`);
       } catch (error) {
         providerErrors.push(error.message);
-        console.warn(`[Voice TTS] Gemini unavailable; trying HADRA/Azure fallback: ${error.message}`);
+        console.warn(`[Voice TTS] Gemini unavailable; trying Darija TTS fallbacks: ${error.message}`);
       }
     }
 
-    if (!wavBuffer && HADRA_TTS_URL && Date.now() >= hadraTtsBackoffUntil) {
+    if (!wavBuffer && shouldTryTtsProvider('hadra') && HADRA_TTS_URL && Date.now() >= hadraTtsBackoffUntil) {
       try {
         if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) arabicSpeechText = await toMoroccanArabicScript(spokenText);
         const hadraResponse = await fetch(HADRA_TTS_URL, {
@@ -149,11 +226,31 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
       } catch (error) {
         hadraTtsBackoffUntil = Date.now() + 5 * 60 * 1000;
         providerErrors.push(error.message);
-        console.warn(`[Voice TTS] HADRA unavailable; trying Azure fallback: ${error.message}`);
+        console.warn(`[Voice TTS] HADRA unavailable; trying other Darija TTS providers: ${error.message}`);
       }
     }
 
-    if (!wavBuffer && AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
+    if (!wavBuffer && shouldTryTtsProvider('kandir') && KANDIR_TTS_URL) {
+      if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) arabicSpeechText = await toMoroccanArabicScript(spokenText).catch(() => spokenText);
+      wavBuffer = await tryModelProvider({ name: 'Kandir DarijaTTS', url: KANDIR_TTS_URL, token: KANDIR_TTS_TOKEN, text: arabicSpeechText });
+    }
+
+    if (!wavBuffer && shouldTryTtsProvider('speecht5') && SPEECHT5_TTS_URL) {
+      wavBuffer = await tryModelProvider({ name: 'SpeechT5 Darija', url: SPEECHT5_TTS_URL, token: SPEECHT5_TTS_TOKEN, text: spokenText });
+    }
+
+    if (!wavBuffer && shouldTryTtsProvider('edge')) {
+      try {
+        if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) arabicSpeechText = await toMoroccanArabicScript(spokenText);
+        wavBuffer = await synthesizeEdgeSpeech(arabicSpeechText);
+        console.log(`[Voice TTS] Synthesized reply with Edge TTS voice ${EDGE_TTS_VOICE}.`);
+      } catch (error) {
+        providerErrors.push(error.message);
+        console.warn(`[Voice TTS] Edge TTS unavailable; trying Azure fallback: ${error.message}`);
+      }
+    }
+
+    if (!wavBuffer && shouldTryTtsProvider('azure') && AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) {
       try {
         if (!/[\u0600-\u06FF]/.test(arabicSpeechText)) arabicSpeechText = await toMoroccanArabicScript(spokenText);
         const safeText = arabicSpeechText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
