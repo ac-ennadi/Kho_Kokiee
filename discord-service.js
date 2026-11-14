@@ -187,7 +187,7 @@ const discordTools = [{
     { name: 'move_members', description: 'Moves specific multiple users.', parameters: { type: 'OBJECT', properties: { target_users: { type: 'STRING' }, destination: { type: 'STRING' } }, required: ['target_users'] } },
     { name: 'dm_members', description: 'DMs users.', parameters: { type: 'OBJECT', properties: { target_users: { type: 'STRING' }, message_text: { type: 'STRING' } }, required: ['target_users', 'message_text'] } },
     { name: 'start_verification', description: 'Starts verification.', parameters: { type: 'OBJECT', properties: { target_user: { type: 'STRING' } } } },
-    { name: 'join_voice', description: 'Joins voice channel.', parameters: { type: 'OBJECT', properties: { channel: { type: 'STRING' } } } },
+    { name: 'join_voice', description: 'Joins the voice channel the caller is currently in. Darija phrases like "bdkhol tap", "dkhol l tap", or "nta dkhol tap" mean join_voice; do not interpret them as a member rejection.', parameters: { type: 'OBJECT', properties: { channel: { type: 'STRING' } } } },
     { name: 'play_music', description: 'Plays a song.', parameters: { type: 'OBJECT', properties: { query: { type: 'STRING' } }, required: ['query'] } },
     { name: 'skip_music', description: 'Skips the song.', parameters: { type: 'OBJECT', properties: {} } },
     { name: 'stop_music', description: 'Stops music.', parameters: { type: 'OBJECT', properties: {} } },
@@ -307,13 +307,13 @@ function getVoiceCommandIntent(text) {
   const unlock = /\b(open|unlock|7ol|7ell|7el|7oul|7oul|7oul|7ellih)\b/.test(input);
 
   if (hasChannel && lock) return { name: 'manage_current_channel', args: { action: 'lock', scope: 'voice' } };
-  if (hasChannel && (unlock || (/\b(allow|let|khli|khalli)\b/.test(input) && /\b(join|dkhol|dkhal|dkhel|d5ol)\b/.test(input)))) {
+  if (hasChannel && (unlock || (/\b(allow|let|khli|khalli)\b/.test(input) && /\b(join|dkhol|bdkhol|bdekhol|dkhal|bdkhal|dkhel|d5ol|d5al|d5el)\b/.test(input)))) {
     return { name: 'manage_current_channel', args: { action: 'unlock', scope: 'voice' } };
   }
   if (/\b(create|make|new|sweb|dir)\b/.test(input) && /\b(voice|room|channel)\b/.test(input)) {
     return { name: 'create_personal_voice_room', args: {} };
   }
-  if (/\b(join|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\b(tap|voice|room|channel)\b/.test(input)) {
+  if (/\b(join|enter|dkhol|bdkhol|bdekhol|dkhal|bdkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\b(tap|voice|room|channel)\b/.test(input)) {
     return { name: 'join_voice', args: { channel: 'here' } };
   }
   if (/\b(rename|change name|bdel|bddel)\b/.test(input) && /\b(room|voice|smit|smiya)\b/.test(input)) {
@@ -343,10 +343,10 @@ function getDirectChannelIntent(text, message) {
   const hasVoiceScope = /\b(voice|room|tap)\b/.test(input);
   const hasTextScope = /\b(text|chat|text channel)\b/.test(input);
   if (!hasTextScope && isInTemporaryRoom && /\b(allow|let|khli|khalli)\b/.test(input)
-    && /\b(join|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\btap\b/.test(input)) {
+    && /\b(join|dkhol|bdkhol|bdekhol|dkhal|bdkhal|dkhel|d5ol|d5al|d5el)\b/.test(input) && /\btap\b/.test(input)) {
     return { name: 'manage_current_channel', args: { action: 'unlock', scope: 'voice' } };
   }
-  if (!hasTextScope && /\b(join|enter|dkhol|dkhal|dkhel|d5ol|d5al|d5el)\b/.test(input)
+  if (!hasTextScope && /\b(join|enter|dkhol|bdkhol|bdekhol|dkhal|bdkhal|dkhel|d5ol|d5al|d5el)\b/.test(input)
     && /\b(tap|voice|room|channel)\b/.test(input)) {
     return { name: 'join_voice', args: { channel: 'here' } };
   }
@@ -645,9 +645,10 @@ async function executeDiscordTool(name, args, message) {
 
   if (name === 'join_voice') {
     if (!distube) return { success: false, error: 'Music missing.' };
+    const messageVoiceChannel = message.channel?.isVoiceBased?.() ? message.channel : null;
     const ch = args.channel && !['here', 'me', 'my channel', 'hna'].includes(args.channel.toLowerCase().trim())
       ? findVoiceChannel(message.guild, args.channel)
-      : caller.voice.channel;
+      : caller.voice.channel || messageVoiceChannel;
     if (!ch) return { success: false, error: 'Ma lqitch voice channel; dkhol l voice aw 3tini smitha.' };
     try {
       await distube.voices.join(ch, { selfDeaf: false });
