@@ -56,8 +56,8 @@ async function toMoroccanArabicScript(text) {
 
 async function speakVoiceReply(message, text, speechTextArabic = null) {
   if (!VOICE_TTS_ENABLED || (!GEMINI_API_KEY && !(AZURE_SPEECH_KEY && AZURE_SPEECH_REGION) && !HADRA_TTS_URL) || !distube || !message.guild) return false;
-  const voiceChannel = message.member?.voice?.channel || message.guild.members.me?.voice?.channel;
-  if (!voiceChannel) return false; // Text-only use stays text-only; no unexpected joining.
+  const voiceChannel = message.guild.members.me?.voice?.channel;
+  if (!voiceChannel || message.member?.voice?.channelId !== voiceChannel.id) return false;
   if (distube.getQueue(message.guild)) {
     console.log(`[Voice TTS] Skipping reply in ${message.guild.id}: music is playing.`);
     return false;
@@ -81,10 +81,9 @@ async function speakVoiceReply(message, text, speechTextArabic = null) {
     if (!voicePermissions?.has(PermissionsBitField.Flags.Speak)) {
       throw new Error(`Bot is missing Speak permission in voice channel ${voiceChannel.id}.`);
     }
-    await distube.voices.join(voiceChannel, { selfDeaf: false });
     const voice = distube.voices.get(guildId);
     connection = voice?.connection;
-    if (!connection) throw new Error('Discord voice connection was not available after joining.');
+    if (!connection) throw new Error('Discord voice connection is not already established.');
     await entersState(connection, VoiceConnectionStatus.Ready, 8000);
     listenInVoiceChannel(message.guild, connection, message.channel);
 
