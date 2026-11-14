@@ -35,8 +35,15 @@ async function startVerification(guild, member) {
     });
 
     if (member.voice && member.voice.channelId) await member.voice.setChannel(newChannel).catch(() => {});
-    newChannel.send(`👋 Salam <@${member.id}>! Daba ghadi yjiw staff bach yverify-iwk. Stenna chwia hna 🙂`).catch(() => {});
-    newChannel.send(`<@&${STAFF_ROLE_ID}> New verification session for **${member.displayName}**. Please come verify them here!`).catch(() => {});
+    newChannel.send({
+      content: `<@${member.id}> <@&${STAFF_ROLE_ID}>`,
+      embeds: [{
+        color: 0x5865f2,
+        title: '🛡️ Verification session',
+        description: `Salam ${member.displayName}! Daba ghadi yji staff yverifyiwk, stenna chwia hna 🙂\n\n**Staff:** 3afakom dkholou l-channel bach tverifyiw ${member.displayName}.`,
+      }],
+      allowedMentions: { users: [member.id], roles: [STAFF_ROLE_ID] },
+    }).catch(() => {});
     member.send(`👋 Salam ${member.displayName}! 3ayetna l staff bach yverify-iwk. Dkhol l <#${newChannel.id}> daba 🙂`).catch(() => {});
     sendLog(guild, `🛡️ **Verification Session:** <@${member.id}> started a verification session in \`${newChannel.name}\`.`).catch(() => {});
     return { success: true, user: member.displayName, mention: `<@${member.id}>`, channel: newChannel.name };
