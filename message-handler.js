@@ -197,7 +197,7 @@ Use the provided Discord tools only for actions the current user clearly request
       // The AI response remains instant in text; voice generation runs separately.
       const voiceActionConflicts = executedTools.some(({ name }) => name === 'play_music' || name === 'leave_music');
       if (!voiceActionConflicts) {
-        voiceService.speakVoiceReply(message, responseText).catch(error =>
+        voice.speakVoiceReply(message, responseText).catch(error =>
           console.warn(`[Voice TTS] Background speech failed: ${error.message}`),
         );
       }
